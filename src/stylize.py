@@ -111,10 +111,6 @@ def _load_image(img: Image.Image, max_size: int = 1920) -> torch.Tensor:
     return _to_tensor(img).unsqueeze(0)
 
 
-# ---------------------------------------------------------------------------
-# Per-region alpha mask generators
-# ---------------------------------------------------------------------------
-
 def gradient_alpha_mask(
     height: int,
     width: int,
@@ -186,8 +182,7 @@ class StyleTransfer:
         Parameters
         ----------
         alpha : float
-            Uniform blending weight (used when *alpha_mask* is ``None``
-            and *alpha_mode* is ``"uniform"``).
+            Uniform blending weight (used when *alpha_mask* is ``None``).
         alpha_mask : torch.Tensor, optional
             Spatial blending map of shape ``1×1×H×W`` whose values are in
             ``[0, 1]``.  When provided, per-region blending is used instead
