@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import date, timezone, datetime
+from datetime import UTC, date, datetime
 from io import BytesIO
 
 import boto3
@@ -57,7 +57,7 @@ def upload(
 
     # Metadata JSON
     metadata["date"] = today.isoformat()
-    metadata["generated_at"] = datetime.now(timezone.utc).isoformat()
+    metadata["generated_at"] = datetime.now(UTC).isoformat()
     key = f"metadata/{date_path}.json"
     client.put_object(
         Bucket=bucket,
