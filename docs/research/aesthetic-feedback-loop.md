@@ -111,7 +111,7 @@ only Pillow and NumPy (both already dependencies or trivially available):
 
 | Metric | Method | What it measures | Implementation |
 |---|---|---|---|
-| **Sharpness** | Variance of Laplacian (edge filter) | Detail / blur level | `ImageFilter.FIND_EDGES` → variance |
+| **Sharpness** | Variance of Laplacian (edge filter) | Detail / blur level | `ImageFilter.FIND_EDGES` → variance (already in `quality.py`) |
 | **Colorfulness** | Hasler–Süsstrunk metric | Color vibrancy / saturation | Channel difference statistics |
 | **Contrast** | Grayscale standard deviation | Dynamic range | `np.std(grayscale)` |
 
@@ -144,7 +144,7 @@ only Pillow and NumPy (both already dependencies or trivially available):
 
 ### Extended metadata JSON schema
 
-The existing metadata JSON (stored at `metadata/YYYY/MM/DD.json`) would gain a `scores` object:
+The existing metadata JSON (stored at `metadata/YYYY/MM/DD.json`) would gain an `aesthetic` object:
 
 ```json
 {
@@ -160,7 +160,9 @@ The existing metadata JSON (stored at `metadata/YYYY/MM/DD.json`) would gain a `
   },
   "date": "2026-03-14",
   "generated_at": "2026-03-14T04:02:31.456789+00:00",
-  "scores": {
+  "aesthetic": {
+    "score": 5.83,
+    "method": "heuristic-v1",
     "nima_mean": 5.83,
     "nima_std": 1.42,
     "sharpness": 1247.6,
@@ -172,7 +174,7 @@ The existing metadata JSON (stored at `metadata/YYYY/MM/DD.json`) would gain a `
 
 ### Design principles
 
-1. **Additive, not breaking.** The `scores` object is a new optional field. Existing consumers of the
+1. **Additive, not breaking.** The `aesthetic` object is a new optional field. Existing consumers of the
    metadata JSON (the Worker API, EXIF embedding) continue to work unchanged.
 2. **Score alongside generation.** Scoring happens in the pipeline between post-processing and upload,
    adding <1 s to the ~5–10 s total pipeline time.
@@ -188,6 +190,12 @@ fetch → stylize → postprocess → [SCORE] → embed EXIF → upload
                                    ↑
                         compute scores here
                    (heuristics + NIMA in ~0.5 s)
+```
+
+### CLI flags
+
+```
+--score / --no-score    Enable/disable aesthetic scoring (default: on)
 ```
 
 ---
@@ -222,22 +230,33 @@ outputs. At one image per day, accumulating enough data takes months:
 3. **Phase 3 (if signals are clear):** Implement simple rules, not ML-based tuning. Example:
    - Drop styles that average >1σ below the mean.
    - Narrow alpha to the interquartile range of top-scoring outputs.
-4. **Do not build an automated optimization loop** until there is strong evidence that parameter changes
-   reliably improve scores. Premature optimization with noisy data will produce erratic behavior.
+
+A simple JSON file could track rolling averages per style:
+
+```json
+{
+  "monet-water-lilies": {"avg_score": 0.78, "count": 15},
+  "hokusai-great-wave": {"avg_score": 0.82, "count": 14}
+}
+```
+
+**Do not build an automated optimization loop** until there is strong evidence that parameter changes
+reliably improve scores. Premature optimization with noisy data will produce erratic behavior.
 
 ---
 
 ## 8. Manual feedback mechanism
 
-### Requirements
+### Simple approach: GitHub Discussions
 
-- Minimal infrastructure — no database, no auth.
-- Works with the existing Cloudflare Worker + R2 architecture.
-- Low friction — a single click (thumbs up/down).
+- Each day's output is posted as a GitHub Discussion (via Actions).
+- Users react with 👍/👎.
+- A weekly script reads reactions and updates a scores file.
 
-### Proposed design
+**Pros:** Zero infrastructure cost; leverages existing GitHub ecosystem.
+**Cons:** Requires GitHub account; low engagement expected.
 
-#### API endpoint
+### Future approach: Worker API endpoint
 
 Add a `POST /api/:date/feedback` route to the Cloudflare Worker:
 
@@ -248,8 +267,6 @@ Content-Type: application/json
 { "rating": 1 }       ← thumbs up
 { "rating": -1 }      ← thumbs down
 ```
-
-#### Storage
 
 Store feedback in R2 at `feedback/YYYY/MM/DD.json`:
 
@@ -264,28 +281,15 @@ Store feedback in R2 at `feedback/YYYY/MM/DD.json`:
 }
 ```
 
-#### How it works
-
-1. Worker receives POST, reads existing feedback JSON from R2 (or creates new).
-2. Appends the vote with a timestamp.
-3. Updates the summary tally.
-4. Writes back to R2.
-
-#### Trade-offs
-
 | Consideration | Assessment |
 |---|---|
 | **No auth** | Anyone can vote. Acceptable for low-traffic internal/hobby use. Rate-limit by IP via Cloudflare rules if abuse occurs. |
 | **No deduplication** | Multiple votes from the same user are possible. Acceptable at low volume; add fingerprinting later if needed. |
 | **R2 read-modify-write** | Not atomic, but at one vote per hour (realistic), conflicts are negligible. |
-| **No frontend** | The API exists; a UI (single-page with 👍/👎 buttons) can be added independently. |
 | **Cost** | R2 Class A operations: $4.50/million. At <100 votes/day, cost rounds to $0. |
 
-#### Priority
-
-Manual feedback is **lower priority** than automated scoring. Automated scores provide a consistent,
-zero-effort baseline. Manual feedback adds signal but requires a consumer-facing UI and user engagement.
-Implement it after automated scoring is established and only if there is demand.
+**Recommendation:** Start with GitHub Discussions for manual feedback — zero infrastructure cost.
+Add the Worker API endpoint later if there is demand for a standalone web UI.
 
 ---
 
@@ -302,7 +306,7 @@ Implement it after automated scoring is established and only if there is demand.
    ~16 MB model download, ~200–500 ms inference on CPU. Provides a calibrated 1–10 aesthetic
    score with uncertainty (std).
 
-3. **Store scores in metadata JSON**: Add a `scores` object to the existing metadata schema.
+3. **Store scores in metadata JSON**: Add an `aesthetic` object to the existing metadata schema.
    No breaking changes. Scores are logged from day one, building a dataset for future analysis.
 
 **Rationale:**
@@ -316,9 +320,6 @@ Implement it after automated scoring is established and only if there is demand.
 - **MIT license.** Both NIMA implementations and weights are MIT-licensed, compatible with bauhaus.
 - **Distributional output.** NIMA's 10-bin distribution provides both a mean score and a standard
   deviation, giving a measure of confidence. LAION provides only a point estimate.
-- **Good enough accuracy.** While LAION may be slightly better calibrated for artwork, NIMA is
-  sufficient for bauhaus's needs: detecting poor outputs and tracking quality trends over time.
-  The 4× model size and new dependency of LAION are not justified by the marginal accuracy gain.
 
 ### Phase 2 — Analysis and simple rules (after ~6 months)
 
@@ -328,9 +329,9 @@ Implement it after automated scoring is established and only if there is demand.
 
 ### Phase 3 — Manual feedback (if demand exists)
 
-- Add `POST /api/:date/feedback` endpoint to the Cloudflare Worker.
+- Start with GitHub Discussions (zero infrastructure cost).
+- Add `POST /api/:date/feedback` endpoint to the Cloudflare Worker if a web UI is needed.
 - Store votes in R2 alongside automated scores.
-- Build a minimal frontend only if there are active consumers who want to provide feedback.
 
 ### Not recommended
 
@@ -342,6 +343,29 @@ Implement it after automated scoring is established and only if there is demand.
 
 ---
 
+## 10. Estimated effort
+
+| Phase | Effort | Dependencies | Timeline |
+|---|---|---|---|
+| Phase 1 (heuristic + NIMA) | ~4 hours | None (existing PyTorch/torchvision) | Immediate |
+| Phase 2 (analysis) | ~4 hours | Phase 1 data (6+ months) | After 6 months |
+| Phase 3 (auto-tune rules) | ~4 hours | Phase 2 analysis | After 100+ outputs |
+| Manual feedback (Discussions) | ~2 hours | GitHub Actions | Anytime |
+| Manual feedback (Worker API) | ~4 hours | Cloudflare Worker changes | If demand exists |
+
+---
+
+## 11. Risks
+
+| Risk | Likelihood | Mitigation |
+|---|---|---|
+| Heuristic score poorly correlates with human judgment | Medium | Validate against manual reviews; iterate scoring formula |
+| NIMA scores biased toward photographs over art | Medium | Monitor score distributions; fine-tune on bauhaus outputs if needed; or use LAION which generalizes better to art |
+| Auto-tuning overfits to scorer biases | Low | Cap style weight adjustments; maintain minimum selection probability for all styles |
+| Scoring adds latency to pipeline | Very low | Heuristic: <10 ms; NIMA: ~500 ms — negligible vs. style transfer (~1–3 s) |
+
+---
+
 ## References
 
 1. Talebi, H. & Milanfar, P. (2018). *NIMA: Neural Image Assessment.* IEEE TIP. [arXiv:1709.05424](https://arxiv.org/abs/1709.05424)
@@ -349,3 +373,5 @@ Implement it after automated scoring is established and only if there is demand.
 3. Schuhmann, C. et al. (2022). *LAION-Aesthetics.* [Blog](https://laion.ai/blog/laion-aesthetics/), [GitHub](https://github.com/LAION-AI/aesthetic-predictor)
 4. Hasler, D. & Süsstrunk, S. (2003). *Measuring colourfulness in natural images.* SPIE Human Vision and Electronic Imaging.
 5. Google Research. (2017). *Introducing NIMA: Neural Image Assessment.* [Blog](https://research.google/blog/introducing-nima-neural-image-assessment/)
+6. Radford, A. et al. (2021). *Learning Transferable Visual Models From Natural Language Supervision.* ICML 2021. (CLIP)
+
