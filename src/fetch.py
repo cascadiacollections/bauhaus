@@ -81,8 +81,14 @@ def is_landscape(title: str) -> bool:
     return bool(LANDSCAPE_PATTERN.search(title))
 
 
+USER_AGENT = "Bauhaus/0.1 (https://github.com/cascadiacollections/bauhaus; CC0 art service)"
+
+_session = requests.Session()
+_session.headers["User-Agent"] = USER_AGENT
+
+
 def _get(url: str, timeout: int = 30) -> requests.Response:
-    resp = requests.get(url, timeout=timeout)
+    resp = _session.get(url, timeout=timeout)
     resp.raise_for_status()
     return resp
 
