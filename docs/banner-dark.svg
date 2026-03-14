@@ -1,0 +1,48 @@
+<svg width="1280" height="840" viewBox="0 0 680 420" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .wm { font-family: 'League Gothic', Impact, sans-serif; font-size: 96px; fill: #F0EDE6; text-transform: uppercase; }
+      .sub { font-family: 'League Gothic', Impact, sans-serif; font-size: 15px; letter-spacing: 7px; fill: #9A9690; text-transform: uppercase; }
+    </style>
+  </defs>
+
+  <!-- Dark ground -->
+  <rect width="680" height="420" fill="#18181A"/>
+
+  <!-- Geometric triad -->
+  <circle cx="108" cy="100" r="72" fill="none" stroke="#D62B2B" stroke-width="8"/>
+  <rect x="36" y="174" width="104" height="104" fill="#1B4FD8"/>
+  <polygon points="148,174 148,278 252,226" fill="#F2C200"/>
+
+  <!-- Vertical divider -->
+  <rect x="254" y="60" width="2" height="260" fill="#F0EDE6" opacity="0.12"/>
+
+  <!-- Wordmark -->
+  <text class="wm" x="272" y="196" dominant-baseline="central">bau</text>
+  <text class="wm" x="272" y="288" dominant-baseline="central">haus</text>
+
+  <!-- Horizontal rule -->
+  <rect x="36" y="294" width="220" height="3" fill="#F0EDE6" opacity="0.15"/>
+
+  <!-- Accent squares -->
+  <rect x="36" y="310" width="18" height="18" fill="#D62B2B"/>
+  <rect x="62" y="310" width="18" height="18" fill="#1B4FD8"/>
+  <rect x="88" y="310" width="18" height="18" fill="#F2C200"/>
+
+  <!-- Tagline -->
+  <text class="sub" x="272" y="348">Daily Stylized Art</text>
+
+  <!-- Style strip -->
+  <rect x="598" y="56"  width="46" height="33" fill="#4A7FCB"/>
+  <rect x="598" y="89"  width="46" height="33" fill="#D4873F"/>
+  <rect x="598" y="122" width="46" height="33" fill="#6BAC74"/>
+  <rect x="598" y="155" width="46" height="33" fill="#C0504C"/>
+  <rect x="598" y="188" width="46" height="33" fill="#5B8FA8"/>
+  <rect x="598" y="221" width="46" height="33" fill="#E8C96B"/>
+  <rect x="598" y="254" width="46" height="33" fill="#4A6FA5"/>
+  <rect x="598" y="287" width="46" height="33" fill="#9B6498"/>
+  <rect x="598" y="320" width="46" height="33" fill="#D4A44C"/>
+  <rect x="598" y="353" width="46" height="31" fill="#5C7A4A"/>
+  <rect x="598" y="56" width="46" height="328" fill="none" stroke="#F0EDE6" stroke-width="1" opacity="0.1"/>
+  <text font-family="monospace" font-size="9" fill="#9A9690" x="596" y="50" text-anchor="end">styles/</text>
+</svg>

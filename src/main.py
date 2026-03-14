@@ -13,7 +13,8 @@ from PIL import Image
 
 from fetch import fetch_artwork
 from postprocess import postprocess
-from stylize import StyleTransfer
+from quality import score_image
+from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
@@ -99,8 +100,17 @@ def main():
                         help="Art source (default: unsplash)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
+    parser.add_argument("--alpha-mode", default="uniform",
+                        choices=["uniform", "gradient", "luminance"],
+                        help="Alpha blending mode (default: uniform)")
+    parser.add_argument("--fg-alpha", type=float, default=0.5,
+                        help="Foreground / bottom / dark region alpha (default: 0.5)")
+    parser.add_argument("--bg-alpha", type=float, default=0.9,
+                        help="Background / top / bright region alpha (default: 0.9)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
+    parser.add_argument("--skip-quality-check", action="store_true",
+                        help="Skip image quality scoring (sharpness, resolution, aspect ratio)")
     parser.add_argument("--color-harmonize", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Apply color harmonization (default: on)")
@@ -110,18 +120,28 @@ def main():
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
     parser.add_argument("--max-size", type=int,
-                        default=int(os.environ.get("MAX_SIZE", "1024")),
-                        help="Max processing resolution in px (default: 1024, env: MAX_SIZE)")
+                        default=int(os.environ.get("MAX_SIZE", "1920")),
+                        help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
 
     # 1. Fetch CC0 artwork
+    quality_gate = not args.skip_quality_check
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
-    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only)
+    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
+
+    # 1b. Quality gate
+    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    if not args.skip_quality_check:
+        qscore = score_image(content_img)
+        print(f"  Quality: sharpness={qscore['sharpness']}, "
+              f"{qscore['width']}×{qscore['height']}, pass={qscore['pass']}")
+        if not qscore["pass"]:
+            print("  ⚠ Source image failed quality check — proceeding anyway", file=sys.stderr)
 
     # 2. Pick style reference
     print(f"Picking style reference (mode={style_mode})...")
@@ -134,9 +154,27 @@ def main():
 
     # 4. Apply AdaIN style transfer
     print("Applying style transfer...")
-    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     model = StyleTransfer()
-    stylized = model.transfer(content_img, style_img, alpha=args.alpha, max_size=args.max_size)
+
+    alpha_mask = None
+    if args.alpha_mode == "gradient":
+        # Use content image dimensions as proxy; mask is resized to feature
+        # map size inside transfer().
+        alpha_mask = gradient_alpha_mask(
+            content_img.height, content_img.width,
+            top_alpha=args.bg_alpha, bottom_alpha=args.fg_alpha,
+        )
+    elif args.alpha_mode == "luminance":
+        from torchvision import transforms as T
+        content_tensor = T.ToTensor()(content_img).unsqueeze(0)
+        alpha_mask = luminance_alpha_mask(
+            content_tensor, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
+        )
+
+    stylized = model.transfer(
+        content_img, style_img,
+        alpha=args.alpha, alpha_mask=alpha_mask, max_size=args.max_size,
+    )
     print("  Style transfer complete.")
 
     # 5. Post-processing
@@ -162,6 +200,10 @@ def main():
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
     metadata["alpha"] = args.alpha
+    metadata["alpha_mode"] = args.alpha_mode
+    if args.alpha_mode != "uniform":
+        metadata["fg_alpha"] = args.fg_alpha
+        metadata["bg_alpha"] = args.bg_alpha
     metadata["style_mode"] = style_mode
     metadata["postprocessing"] = {
         "color_harmonize": args.color_harmonize,
