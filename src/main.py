@@ -109,14 +109,17 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
+    parser.add_argument("--no-quality-gate", action="store_true", default=False,
+                        help="Disable image quality gate (resolution, sharpness checks)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
+    quality_gate = not args.no_quality_gate
 
     # 1. Fetch CC0 artwork
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
-    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only)
+    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
 

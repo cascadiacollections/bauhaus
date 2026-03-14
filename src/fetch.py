@@ -9,6 +9,8 @@ from io import BytesIO
 
 import requests
 
+from quality import passes_quality_gate
+
 NSFW_PATTERN = re.compile(
     r"\b(nude|naked|bather|bathers|bathing|odalisque|venus|cupid|"
     r"nymph|nymphs|erotic|sensual|courtesan|harem|leda|danae|susanna)\b",
@@ -101,7 +103,7 @@ def _get(url: str, timeout: int = 30) -> requests.Response:
     return resp
 
 
-def fetch_met(landscapes_only: bool = True) -> Artwork:
+def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Metropolitan Museum."""
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -142,6 +144,12 @@ def fetch_met(landscapes_only: bool = True) -> Artwork:
 
             img_resp = _get(img_url, timeout=60)
 
+            if quality_gate:
+                passed, reason = passes_quality_gate(img_resp.content)
+                if not passed:
+                    print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
+                    continue
+
             return Artwork(
                 title=title,
                 artist=obj.get("artistDisplayName", "Unknown artist"),
@@ -157,7 +165,7 @@ def fetch_met(landscapes_only: bool = True) -> Artwork:
     raise RuntimeError(f"Failed to fetch from Met Museum after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_artic(landscapes_only: bool = True) -> Artwork:
+def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Art Institute of Chicago."""
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -196,6 +204,12 @@ def fetch_artic(landscapes_only: bool = True) -> Artwork:
             iiif_url = f"https://www.artic.edu/iiif/2/{image_id}/full/3000,/0/default.jpg"
             img_resp = _get(iiif_url, timeout=60)
 
+            if quality_gate:
+                passed, reason = passes_quality_gate(img_resp.content)
+                if not passed:
+                    print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
+                    continue
+
             return Artwork(
                 title=title,
                 artist=item.get("artist_title") or "Unknown artist",
@@ -211,7 +225,7 @@ def fetch_artic(landscapes_only: bool = True) -> Artwork:
     raise RuntimeError(f"Failed to fetch from AIC after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_unsplash(landscapes_only: bool = True) -> Artwork:
+def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random landscape photo from Unsplash."""
     access_key = os.environ["UNSPLASH_ACCESS_KEY"]
     for attempt in range(MAX_ATTEMPTS):
@@ -234,6 +248,12 @@ def fetch_unsplash(landscapes_only: bool = True) -> Artwork:
             raw_url = data["urls"]["raw"] + "&w=3840&q=85"
             img_resp = _get(raw_url, timeout=60)
 
+            if quality_gate:
+                passed, reason = passes_quality_gate(img_resp.content)
+                if not passed:
+                    print(f"Quality gate rejected: {reason}", file=sys.stderr)
+                    continue
+
             user = data.get("user", {})
             title = data.get("alt_description") or data.get("description") or "Untitled"
 
@@ -254,13 +274,15 @@ def fetch_unsplash(landscapes_only: bool = True) -> Artwork:
     raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True) -> Artwork:
+def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch artwork from the specified source.
 
     Args:
         source: "unsplash", "met", or "artic"
         landscapes_only: When True (default), bias toward landscapes/seascapes
                          and filter out portraits, small objects, etc.
+        quality_gate: When True (default), reject images that fail resolution,
+                      aspect ratio, or sharpness checks.
     """
     fetchers = {
         "unsplash": fetch_unsplash,
@@ -270,4 +292,4 @@ def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True) -> Art
     fetcher = fetchers.get(source)
     if not fetcher:
         raise ValueError(f"Unknown source: {source}. Available: {', '.join(fetchers)}")
-    return fetcher(landscapes_only=landscapes_only)
+    return fetcher(landscapes_only=landscapes_only, quality_gate=quality_gate)
