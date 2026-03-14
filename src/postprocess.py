@@ -129,7 +129,7 @@ def upscale(image: Image.Image, scale: int = 2) -> Image.Image:
 
 def _upscale_realesrgan(image: Image.Image, scale: int) -> Image.Image:
     """Upscale using Real-ESRGAN model (requires ``realesrgan`` package)."""
-    import numpy as np  # noqa: F811 – lazy import
+    import numpy as np  # noqa: F811 - lazy import
     from basicsr.archs.rrdbnet_arch import RRDBNet  # type: ignore[import-untyped]
     from realesrgan import RealESRGANer  # type: ignore[import-untyped]
 
@@ -137,8 +137,9 @@ def _upscale_realesrgan(image: Image.Image, scale: int) -> Image.Image:
         num_in_ch=3, num_out_ch=3, num_feat=64,
         num_block=23, num_grow_ch=32, scale=scale,
     )
+    # model_path is unused when a pre-built model is supplied directly
     upsampler = RealESRGANer(
-        scale=scale, model_path=None, model=model, half=False,
+        scale=scale, model_path="", model=model, half=False,
     )
 
     img_array = np.array(image)
