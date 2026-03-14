@@ -12,7 +12,7 @@ Fetches landscape photos from [Unsplash](https://unsplash.com) (default) or CC0 
 
 ## Set as your wallpaper
 
-A new landscape is generated every day at 8 AM Pacific. Grab it and set it in one line:
+A new landscape is generated every day overnight (4 AM UTC). Grab it and set it in one line:
 
 **macOS**
 ```bash
@@ -47,7 +47,7 @@ Automate it with a cron job, Task Scheduler, or systemd timer to get fresh art o
 ## How it works
 
 ```
-GitHub Actions (daily, 8 AM PT / 3 PM UTC)
+GitHub Actions (daily, 4 AM UTC / 8 PM PT)
   1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)

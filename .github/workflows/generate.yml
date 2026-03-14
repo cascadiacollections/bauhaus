@@ -3,7 +3,7 @@ name: Generate Daily Art
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 15 * * *'  # 3 PM UTC (8 AM PDT)
+    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
 
 jobs:
   generate:
