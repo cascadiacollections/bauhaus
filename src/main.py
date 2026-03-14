@@ -87,15 +87,9 @@ def ensure_models():
     if (weights_dir / "vgg_normalised.pth").exists() and (weights_dir / "decoder.pth").exists():
         return
 
-    # Import the sibling download helper so we don't depend on bash/curl.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-        "download_models",
-        Path(__file__).resolve().parent.parent / "models" / "download_models.py",
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    mod.download_models(weights_dir)
+    import subprocess
+    script = Path(__file__).resolve().parent.parent / "models" / "download_models.py"
+    subprocess.run([sys.executable, str(script)], check=True)
 
 
 def main():
