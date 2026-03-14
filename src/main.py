@@ -12,7 +12,7 @@ from pathlib import Path
 from PIL import Image
 
 from fetch import fetch_artwork
-from stylize import StyleTransfer
+from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
@@ -79,6 +79,13 @@ def main():
                         help="Art source (default: met)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
+    parser.add_argument("--alpha-mode", default="uniform",
+                        choices=["uniform", "gradient", "luminance"],
+                        help="Alpha blending mode (default: uniform)")
+    parser.add_argument("--fg-alpha", type=float, default=0.5,
+                        help="Foreground / bottom / dark region alpha (default: 0.5)")
+    parser.add_argument("--bg-alpha", type=float, default=0.9,
+                        help="Background / top / bright region alpha (default: 0.9)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
     args = parser.parse_args()
@@ -105,7 +112,23 @@ def main():
     print("Applying style transfer...")
     content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     model = StyleTransfer()
-    stylized = model.transfer(content_img, style_img, alpha=args.alpha)
+
+    alpha_mask = None
+    if args.alpha_mode == "gradient":
+        # Use content image dimensions as proxy; mask is resized to feature
+        # map size inside transfer().
+        alpha_mask = gradient_alpha_mask(
+            content_img.height, content_img.width,
+            top_alpha=args.bg_alpha, bottom_alpha=args.fg_alpha,
+        )
+    elif args.alpha_mode == "luminance":
+        from stylize import _load_image, _to_tensor
+        ct = _to_tensor(content_img).unsqueeze(0)
+        alpha_mask = luminance_alpha_mask(
+            ct, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
+        )
+
+    stylized = model.transfer(content_img, style_img, alpha=args.alpha, alpha_mask=alpha_mask)
     print("  Style transfer complete.")
 
     # Convert stylized to bytes
@@ -117,6 +140,10 @@ def main():
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
     metadata["alpha"] = args.alpha
+    metadata["alpha_mode"] = args.alpha_mode
+    if args.alpha_mode != "uniform":
+        metadata["fg_alpha"] = args.fg_alpha
+        metadata["bg_alpha"] = args.bg_alpha
     metadata["style_mode"] = style_mode
 
     if args.dry_run:
