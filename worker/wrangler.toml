@@ -1,0 +1,8 @@
+name = "bauhaus"
+main = "src/index.ts"
+compatibility_date = "2026-03-13"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "bauhaus"
