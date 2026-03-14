@@ -212,7 +212,7 @@ bauhaus is licensed under **MIT** and outputs are **CC0-1.0**. Any adopted model
 - **If StyTR² or AesPA-Net receive an open-source license**, re-evaluate — StyTR² would be the top pick for quality.
 - **If bauhaus adds GPU support** (e.g., self-hosted runner or cloud GPU), the inference-time concern diminishes and CAST becomes more attractive.
 - **If CAST releases pre-trained weights** under a permissive license, it could be a drop-in quality improvement worth the moderate integration effort.
-- **Monitor [MicroAST](https://github.com/EndyWon/MicroAST)** (CVPR 2023) — a lightweight style transfer model designed for mobile/edge that could further reduce model size while maintaining quality.
+- **Monitor [MicroAST](https://github.com/EndyWon/MicroAST)** (AAAI 2023) — a lightweight style transfer model designed for mobile/edge that could further reduce model size while maintaining quality.
 
 ---
 
