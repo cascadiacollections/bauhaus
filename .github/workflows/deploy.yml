@@ -12,7 +12,7 @@ permissions:
   deployments: write
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '24'
   WORKER_URL: 'https://bauhaus.cascadiacollections.workers.dev'
 
 concurrency:
@@ -25,12 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           sparse-checkout: worker
           sparse-checkout-cone-mode: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
