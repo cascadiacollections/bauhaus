@@ -103,6 +103,7 @@ uv run python src/main.py --dry-run --source met      # Metropolitan Museum
 uv run python src/main.py --dry-run --source artic    # Art Institute of Chicago
 uv run python src/main.py --dry-run --alpha 0.5       # subtle style (0.0-1.0)
 uv run python src/main.py --dry-run --any-subject     # disable landscape filter
+uv run python src/main.py --dry-run --max-size 1536   # higher processing resolution
 ```
 
 ### Docker
@@ -131,6 +132,7 @@ npx wrangler dev
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
+| `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
 
 ## Style references
 

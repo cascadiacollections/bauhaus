@@ -119,8 +119,9 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
-    parser.add_argument("--max-size", type=int, default=1920,
-                        help="Max processing resolution in pixels (default: 1920)")
+    parser.add_argument("--max-size", type=int,
+                        default=int(os.environ.get("MAX_SIZE", "1920")),
+                        help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
