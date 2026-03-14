@@ -3,7 +3,7 @@
 [![Generate Daily Art](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml/badge.svg)](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Output: CC0-1.0](https://img.shields.io/badge/Output-CC0--1.0-brightgreen.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776ab.svg)](https://python.org)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14-3776ab.svg)](https://python.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
 Daily stylized art from public domain museum collections. CC0 in, CC0 out.

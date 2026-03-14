@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CC0 daily stylized art service — AdaIN style transfer on public domain museum artwork"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
     "torch>=2.0,<3.0",
     "torchvision>=0.15,<1.0",
