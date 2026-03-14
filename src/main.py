@@ -14,7 +14,7 @@ from PIL import Image
 from fetch import fetch_artwork
 from postprocess import postprocess
 from quality import score_image
-from stylize import StyleTransfer
+from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
@@ -103,6 +103,10 @@ def main():
     parser.add_argument("--alpha-mode", default="uniform",
                         choices=["uniform", "gradient", "luminance"],
                         help="Alpha blending mode (default: uniform)")
+    parser.add_argument("--fg-alpha", type=float, default=0.5,
+                        help="Foreground / bottom / dark region alpha (default: 0.5)")
+    parser.add_argument("--bg-alpha", type=float, default=0.9,
+                        help="Background / top / bright region alpha (default: 0.9)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
     parser.add_argument("--skip-quality-check", action="store_true",
@@ -150,10 +154,25 @@ def main():
     # 4. Apply AdaIN style transfer
     print("Applying style transfer...")
     model = StyleTransfer()
+
+    alpha_mask = None
+    if args.alpha_mode == "gradient":
+        # Use content image dimensions as proxy; mask is resized to feature
+        # map size inside transfer().
+        alpha_mask = gradient_alpha_mask(
+            content_img.height, content_img.width,
+            top_alpha=args.bg_alpha, bottom_alpha=args.fg_alpha,
+        )
+    elif args.alpha_mode == "luminance":
+        from torchvision import transforms as T
+        content_tensor = T.ToTensor()(content_img).unsqueeze(0)
+        alpha_mask = luminance_alpha_mask(
+            content_tensor, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
+        )
+
     stylized = model.transfer(
         content_img, style_img,
-        alpha=args.alpha, max_size=args.max_size,
-        alpha_mode=args.alpha_mode,
+        alpha=args.alpha, alpha_mask=alpha_mask, max_size=args.max_size,
     )
     print("  Style transfer complete.")
 
@@ -181,6 +200,9 @@ def main():
     metadata.update(style_meta)
     metadata["alpha"] = args.alpha
     metadata["alpha_mode"] = args.alpha_mode
+    if args.alpha_mode != "uniform":
+        metadata["fg_alpha"] = args.fg_alpha
+        metadata["bg_alpha"] = args.bg_alpha
     metadata["style_mode"] = style_mode
     metadata["postprocessing"] = {
         "color_harmonize": args.color_harmonize,
