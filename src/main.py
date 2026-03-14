@@ -19,6 +19,25 @@ from upload import upload
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 
+# EXIF tag IDs
+_EXIF_IMAGE_DESCRIPTION = 0x010E
+_EXIF_ARTIST = 0x013B
+_EXIF_COPYRIGHT = 0x8298
+
+
+def embed_exif(image: Image.Image, metadata: dict) -> bytes:
+    """Encode image as JPEG with EXIF metadata (title, artist, copyright)."""
+    exif = image.getexif()
+    exif[_EXIF_IMAGE_DESCRIPTION] = metadata.get("title", "")
+    artist = metadata.get("photographer") or metadata.get("artist", "")
+    exif[_EXIF_ARTIST] = artist
+    license_name = metadata.get("license", "")
+    license_url = metadata.get("license_url", "")
+    exif[_EXIF_COPYRIGHT] = f"{license_name} — {license_url}" if license_url else license_name
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95, exif=exif.tobytes())
+    return buf.getvalue()
+
 
 def load_styles_manifest() -> list[dict]:
     manifest = STYLES_DIR / "styles.json"
@@ -76,8 +95,8 @@ def main():
     parser = argparse.ArgumentParser(description="Generate daily stylized artwork")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and stylize locally, skip R2 upload")
-    parser.add_argument("--source", default="met", choices=["met", "artic"],
-                        help="Art source (default: met)")
+    parser.add_argument("--source", default="unsplash", choices=["unsplash", "met", "artic"],
+                        help="Art source (default: unsplash)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
     parser.add_argument("--any-subject", action="store_true",
@@ -136,11 +155,6 @@ def main():
         )
         print("  Post-processing complete.")
 
-    # Convert stylized to bytes
-    buf = BytesIO()
-    stylized.save(buf, format="JPEG", quality=95)
-    stylized_bytes = buf.getvalue()
-
     # Build metadata
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
@@ -152,6 +166,12 @@ def main():
         "upscale": args.upscale,
     }
 
+    # Embed EXIF metadata into images
+    print("Embedding EXIF metadata...")
+    stylized_bytes = embed_exif(stylized, metadata)
+    original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    original_bytes = embed_exif(original_img, metadata)
+
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -160,8 +180,9 @@ def main():
         metadata_path = OUTPUT_DIR / "metadata.json"
 
         with open(original_path, "wb") as f:
-            f.write(artwork.image_bytes)
-        stylized.save(stylized_path, quality=95)
+            f.write(original_bytes)
+        with open(stylized_path, "wb") as f:
+            f.write(stylized_bytes)
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
 
@@ -173,7 +194,7 @@ def main():
 
     # 6. Upload to R2
     print("Uploading to R2...")
-    keys = upload(artwork.image_bytes, stylized_bytes, metadata)
+    keys = upload(original_bytes, stylized_bytes, metadata)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")

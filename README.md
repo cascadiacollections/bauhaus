@@ -2,13 +2,13 @@
 
 [![Generate Daily Art](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml/badge.svg)](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Output: CC0-1.0](https://img.shields.io/badge/Output-CC0--1.0-brightgreen.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
+[![Output: Source-dependent](https://img.shields.io/badge/Output-Source--dependent-yellow.svg)](#licensing)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776ab.svg)](https://python.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-Daily stylized art from public domain museum collections. CC0 in, CC0 out.
+Daily stylized art from Unsplash landscapes and public domain museum collections.
 
-Fetches CC0 landscapes and seascapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
+Fetches landscape photos from [Unsplash](https://unsplash.com) (default) or CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
 
 ## Today's artwork
 
@@ -20,7 +20,7 @@ curl https://bauhaus.cascadiacollections.workers.dev/api/today -o wallpaper.jpg
 
 ```
 GitHub Actions (daily, 3 PM UTC)
-  1. Fetch random CC0 landscape from Met/AIC APIs
+  1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
   4. Upload original + stylized + metadata to Cloudflare R2
@@ -66,8 +66,9 @@ bash models/download_models.sh
 uv run python src/main.py --dry-run
 
 # Options
-uv run python src/main.py --dry-run --source artic   # Art Institute of Chicago
-uv run python src/main.py --dry-run --source met      # Metropolitan Museum (default)
+uv run python src/main.py --dry-run --source unsplash  # Unsplash landscape (default)
+uv run python src/main.py --dry-run --source met      # Metropolitan Museum
+uv run python src/main.py --dry-run --source artic    # Art Institute of Chicago
 uv run python src/main.py --dry-run --alpha 0.5       # subtle style (0.0-1.0)
 uv run python src/main.py --dry-run --any-subject     # disable landscape filter
 ```
@@ -96,6 +97,7 @@ npx wrangler dev
 | `R2_SECRET_ACCESS_KEY` | R2 secret key |
 | `R2_BUCKET` | Bucket name (default: `bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
+| `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 
 ## Style references
@@ -109,8 +111,9 @@ Monet, Hokusai, Cezanne, Turner, Hiroshige, Seurat, Degas, Klimt, Van Gogh, Gaug
 | Component | License |
 |-----------|---------|
 | Code | MIT |
-| Input art | CC0 (Met Museum, AIC public domain collections) |
-| Style references | CC0 (same sources) |
+| Input art (Unsplash) | [Unsplash License](https://unsplash.com/license) (allows derivatives and commercial use) |
+| Input art (Met/AIC) | CC0 (public domain collections) |
+| Style references | CC0 (same museum sources) |
 | AdaIN model | MIT ([naoto0804/pytorch-AdaIN](https://github.com/naoto0804/pytorch-AdaIN)) |
 | VGG-19 encoder | BSD-like (torchvision) |
-| **Output images** | **CC0-1.0** |
+| **Output images** | **Source-dependent** (CC0-1.0 for museum sources, Unsplash License for Unsplash) |
