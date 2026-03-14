@@ -20,6 +20,17 @@ def _make_image(width: int, height: int, color: tuple = (128, 128, 128)) -> Imag
     return Image.new("RGB", (width, height), color)
 
 
+def _make_noisy_image(width: int, height: int, seed: int = 42) -> Image.Image:
+    """Create a noisy test image with high sharpness."""
+    import random as rng
+    rng.seed(seed)
+    img = Image.new("RGB", (width, height))
+    pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
+               for _ in range(width * height)]
+    img.putdata(pixels)
+    return img
+
+
 def _to_bytes(img: Image.Image, fmt: str = "JPEG") -> bytes:
     """Encode a PIL Image to bytes."""
     buf = BytesIO()
@@ -92,22 +103,12 @@ class TestComputeSharpness:
 
     def test_noisy_image_is_high(self):
         # High-frequency noise → high Laplacian variance
-        import random as rng
-        rng.seed(42)
-        img = Image.new("RGB", (800, 600))
-        pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
-                   for _ in range(800 * 600)]
-        img.putdata(pixels)
+        img = _make_noisy_image(800, 600)
         sharpness = compute_sharpness(img)
         assert sharpness > 100.0
 
     def test_blurred_is_lower_than_sharp(self):
-        import random as rng
-        rng.seed(42)
-        img = Image.new("RGB", (800, 600))
-        pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
-                   for _ in range(800 * 600)]
-        img.putdata(pixels)
+        img = _make_noisy_image(800, 600)
 
         sharp = compute_sharpness(img)
         blurred_img = img.filter(ImageFilter.GaussianBlur(radius=10))
@@ -124,12 +125,7 @@ class TestComputeSharpness:
 class TestPassesQualityGate:
     def test_good_image_passes(self):
         # Create a sharp, large image with some texture
-        import random as rng
-        rng.seed(42)
-        img = Image.new("RGB", (1024, 768))
-        pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
-                   for _ in range(1024 * 768)]
-        img.putdata(pixels)
+        img = _make_noisy_image(1024, 768)
         passed, reason = passes_quality_gate(_to_bytes(img))
         assert passed is True
         assert reason == ""
@@ -184,11 +180,6 @@ class TestPassesQualityGate:
         assert len(result) == 2
 
     def test_png_format(self):
-        import random as rng
-        rng.seed(42)
-        img = Image.new("RGB", (1024, 768))
-        pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
-                   for _ in range(1024 * 768)]
-        img.putdata(pixels)
+        img = _make_noisy_image(1024, 768)
         passed, reason = passes_quality_gate(_to_bytes(img, fmt="PNG"))
         assert passed is True
