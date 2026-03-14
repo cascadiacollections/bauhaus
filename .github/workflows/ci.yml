@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.mise.toml'
+      - 'styles/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python (fetch + stylize)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Check imports
+        run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; print('OK')"
+        working-directory: src
+
+  worker:
+    name: Worker (typecheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: worker
+          sparse-checkout-cone-mode: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: worker
+        run: npx tsc --noEmit
