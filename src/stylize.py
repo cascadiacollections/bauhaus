@@ -99,7 +99,7 @@ _to_tensor = transforms.Compose([
 ])
 
 
-def _load_image(img: Image.Image, max_size: int = 768) -> torch.Tensor:
+def _load_image(img: Image.Image, max_size: int = 1024) -> torch.Tensor:
     """Resize and convert PIL Image to tensor."""
     w, h = img.size
     scale = min(max_size / max(w, h), 1.0)
@@ -122,7 +122,7 @@ class StyleTransfer:
         content: Image.Image,
         style: Image.Image,
         alpha: float = 0.8,
-        max_size: int = 1920,
+        max_size: int = 1024,
     ) -> Image.Image:
         """Apply style transfer. Returns stylized PIL Image at original content size."""
         orig_w, orig_h = content.size

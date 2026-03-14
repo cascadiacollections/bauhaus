@@ -109,6 +109,9 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
+    parser.add_argument("--max-size", type=int,
+                        default=int(os.environ.get("MAX_SIZE", "1024")),
+                        help="Max processing resolution in px (default: 1024, env: MAX_SIZE)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
@@ -133,7 +136,7 @@ def main():
     print("Applying style transfer...")
     content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     model = StyleTransfer()
-    stylized = model.transfer(content_img, style_img, alpha=args.alpha)
+    stylized = model.transfer(content_img, style_img, alpha=args.alpha, max_size=args.max_size)
     print("  Style transfer complete.")
 
     # 5. Post-processing
