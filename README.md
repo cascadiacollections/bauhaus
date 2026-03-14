@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/banner-dark.svg" alt="Bauhaus — Daily Stylized Art" width="640">
+</p>
+
 # Bauhaus
 
 [![Generate Daily Art](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml/badge.svg)](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml)
