@@ -102,7 +102,7 @@ _to_tensor = transforms.Compose([
 ])
 
 
-def _load_image(img: Image.Image, max_size: int = 768) -> torch.Tensor:
+def _load_image(img: Image.Image, max_size: int = 1920) -> torch.Tensor:
     """Resize and convert PIL Image to tensor."""
     w, h = img.size
     scale = min(max_size / max(w, h), 1.0)
@@ -179,18 +179,25 @@ class StyleTransfer:
         alpha: float = 0.8,
         alpha_mask: torch.Tensor | None = None,
         max_size: int = 1920,
+        alpha_mode: str = "uniform",
     ) -> Image.Image:
         """Apply style transfer.  Returns stylized PIL Image at original size.
 
         Parameters
         ----------
         alpha : float
-            Uniform blending weight (used when *alpha_mask* is ``None``).
+            Uniform blending weight (used when *alpha_mask* is ``None``
+            and *alpha_mode* is ``"uniform"``).
         alpha_mask : torch.Tensor, optional
             Spatial blending map of shape ``1×1×H×W`` whose values are in
             ``[0, 1]``.  When provided, per-region blending is used instead
             of the scalar *alpha*.  The mask is automatically resized to
             match the encoder feature-map resolution.
+        max_size : int
+            Maximum processing resolution in pixels.
+        alpha_mode : str
+            Blending mode — ``"uniform"`` (default), ``"gradient"``, or
+            ``"luminance"``.  Ignored when *alpha_mask* is provided.
         """
         orig_w, orig_h = content.size
         content_tensor = _load_image(content, max_size)
@@ -205,6 +212,18 @@ class StyleTransfer:
             feat_h, feat_w = content_feat.shape[2:]
             mask = F.interpolate(
                 alpha_mask, size=(feat_h, feat_w), mode="bilinear", align_corners=False,
+            )
+            blended = mask * adain_feat + (1 - mask) * content_feat
+        elif alpha_mode == "gradient":
+            _, _, fh, fw = content_feat.shape
+            mask = gradient_alpha_mask(fh, fw, top_alpha=alpha, bottom_alpha=alpha * 0.5)
+            blended = mask * adain_feat + (1 - mask) * content_feat
+        elif alpha_mode == "luminance":
+            mask = luminance_alpha_mask(
+                content_tensor, bright_alpha=alpha, dark_alpha=alpha * 0.5,
+            )
+            mask = F.interpolate(
+                mask, size=content_feat.shape[2:], mode="bilinear", align_corners=False,
             )
             blended = mask * adain_feat + (1 - mask) * content_feat
         else:

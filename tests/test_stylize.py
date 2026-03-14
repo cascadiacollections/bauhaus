@@ -39,6 +39,11 @@ class TestGradientAlphaMask:
         assert mask.shape == (1, 1, 1, 10)
         assert torch.allclose(mask, torch.tensor(0.8))
 
+    def test_uniform_across_width(self):
+        mask = gradient_alpha_mask(8, 16, top_alpha=1.0, bottom_alpha=0.5)
+        row = mask[0, 0, 3, :]
+        assert torch.allclose(row, row[0].expand_as(row))
+
 
 class TestLuminanceAlphaMask:
     def test_shape_matches_input(self):
@@ -81,3 +86,11 @@ class TestLuminanceAlphaMask:
         mask = luminance_alpha_mask(t, bright_alpha=1.0, dark_alpha=0.0)
         assert torch.allclose(mask[0, 0, 0, 0], torch.tensor(1.0), atol=1e-5)
         assert torch.allclose(mask[0, 0, 1, 0], torch.tensor(0.0), atol=1e-5)
+
+    def test_uniform_input_fallback(self):
+        # Constant-color image: range = 0
+        tensor = torch.full((1, 3, 4, 4), 0.5)
+        mask = luminance_alpha_mask(tensor, bright_alpha=1.0, dark_alpha=0.0)
+        # Falls back to luminance=0.5 everywhere
+        expected = 0.0 + (1.0 - 0.0) * 0.5
+        assert torch.allclose(mask, torch.full_like(mask, expected), atol=1e-5)

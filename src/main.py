@@ -13,6 +13,7 @@ from PIL import Image
 
 from fetch import fetch_artwork
 from postprocess import postprocess
+from quality import score_image
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 
@@ -108,6 +109,8 @@ def main():
                         help="Background / top / bright region alpha (default: 0.9)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
+    parser.add_argument("--skip-quality-check", action="store_true",
+                        help="Skip image quality scoring (sharpness, resolution, aspect ratio)")
     parser.add_argument("--color-harmonize", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Apply color harmonization (default: on)")
@@ -116,6 +119,8 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
+    parser.add_argument("--max-size", type=int, default=1920,
+                        help="Max processing resolution in pixels (default: 1920)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
@@ -126,6 +131,15 @@ def main():
     artwork = fetch_artwork(args.source, landscapes_only=landscapes_only)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
+
+    # 1b. Quality gate
+    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    if not args.skip_quality_check:
+        qscore = score_image(content_img)
+        print(f"  Quality: sharpness={qscore['sharpness']}, "
+              f"{qscore['width']}×{qscore['height']}, pass={qscore['pass']}")
+        if not qscore["pass"]:
+            print("  ⚠ Source image failed quality check — proceeding anyway", file=sys.stderr)
 
     # 2. Pick style reference
     print(f"Picking style reference (mode={style_mode})...")
@@ -138,7 +152,6 @@ def main():
 
     # 4. Apply AdaIN style transfer
     print("Applying style transfer...")
-    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     model = StyleTransfer()
 
     alpha_mask = None
@@ -156,7 +169,10 @@ def main():
             content_tensor, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
         )
 
-    stylized = model.transfer(content_img, style_img, alpha=args.alpha, alpha_mask=alpha_mask)
+    stylized = model.transfer(
+        content_img, style_img,
+        alpha=args.alpha, alpha_mask=alpha_mask, max_size=args.max_size,
+    )
     print("  Style transfer complete.")
 
     # 5. Post-processing
