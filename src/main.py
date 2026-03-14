@@ -127,8 +127,9 @@ def main():
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
 
     # 1. Fetch CC0 artwork
+    quality_gate = not args.skip_quality_check
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
-    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only)
+    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
 
