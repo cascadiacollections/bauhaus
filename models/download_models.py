@@ -2,6 +2,7 @@
 """Download VGG-19 encoder and AdaIN decoder weights (cross-platform)."""
 
 from pathlib import Path
+from urllib.error import URLError
 from urllib.request import urlretrieve
 
 BASE_URL = "https://github.com/naoto0804/pytorch-AdaIN/releases/download/v0.0.0"
@@ -19,7 +20,11 @@ def download_models(weights_dir: Path = WEIGHTS_DIR) -> None:
             continue
         url = f"{BASE_URL}/{name}"
         print(f"Downloading {name}...")
-        urlretrieve(url, dest)  # noqa: S310 — trusted fixed URL
+        try:
+            urlretrieve(url, dest)  # noqa: S310 — trusted fixed URL
+        except URLError as exc:
+            dest.unlink(missing_ok=True)  # remove partial download
+            raise RuntimeError(f"Failed to download {name}: {exc}") from exc
     print(f"Models ready in {weights_dir}")
 
 
