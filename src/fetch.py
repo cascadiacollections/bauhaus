@@ -14,10 +14,27 @@ NSFW_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Met Museum departments with good visual art
-MET_DEPARTMENTS = [11, 21, 6, 9, 15, 17, 19]
+# Met Museum departments biased toward landscapes, objects, and non-figurative art.
+# Style transfer produces better results on these vs. portraits/figures.
+MET_DEPARTMENTS = [
+    6,   # Asian Art (landscapes, ceramics, screens)
+    9,   # Drawings and Prints (landscapes, architecture)
+    15,  # Musical Instruments
+    17,  # Medieval Art (architecture, manuscripts)
+    11,  # European Paintings (includes landscapes)
+    21,  # Modern Art
+    19,  # Photographs
+]
 
-MAX_ATTEMPTS = 5
+# Prefer landscape/object/scene subjects — skip portraits and figurative works
+PORTRAIT_PATTERN = re.compile(
+    r"\b(portrait|self-portrait|bust|head of|figure|figures|"
+    r"man standing|woman standing|seated man|seated woman|"
+    r"madonna|crucifixion|pietà|pieta|saint \w+)\b",
+    re.IGNORECASE,
+)
+
+MAX_ATTEMPTS = 10
 
 
 @dataclass
@@ -39,6 +56,11 @@ class Artwork:
 
 def is_safe_title(title: str) -> bool:
     return not NSFW_PATTERN.search(title)
+
+
+def is_preferred_subject(title: str) -> bool:
+    """Return True if the title suggests a landscape, object, or scene (not a portrait)."""
+    return not PORTRAIT_PATTERN.search(title)
 
 
 def _get(url: str, timeout: int = 30) -> requests.Response:
@@ -75,6 +97,9 @@ def fetch_met() -> Artwork:
             title = obj.get("title", "Unknown")
             if not is_safe_title(title):
                 print(f"Skipping NSFW: {title}", file=sys.stderr)
+                continue
+            if not is_preferred_subject(title):
+                print(f"Skipping figurative: {title}", file=sys.stderr)
                 continue
 
             img_resp = _get(img_url, timeout=60)
@@ -114,6 +139,9 @@ def fetch_artic() -> Artwork:
             title = item.get("title", "Unknown")
             if not is_safe_title(title):
                 print(f"Skipping NSFW: {title}", file=sys.stderr)
+                continue
+            if not is_preferred_subject(title):
+                print(f"Skipping figurative: {title}", file=sys.stderr)
                 continue
 
             image_id = item["image_id"]
