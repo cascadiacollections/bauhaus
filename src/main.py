@@ -122,10 +122,10 @@ def main():
             top_alpha=args.bg_alpha, bottom_alpha=args.fg_alpha,
         )
     elif args.alpha_mode == "luminance":
-        from stylize import _load_image, _to_tensor
-        ct = _to_tensor(content_img).unsqueeze(0)
+        from torchvision import transforms as T
+        content_tensor = T.ToTensor()(content_img).unsqueeze(0)
         alpha_mask = luminance_alpha_mask(
-            ct, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
+            content_tensor, bright_alpha=args.bg_alpha, dark_alpha=args.fg_alpha,
         )
 
     stylized = model.transfer(content_img, style_img, alpha=args.alpha, alpha_mask=alpha_mask)
