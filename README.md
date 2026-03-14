@@ -10,16 +10,44 @@ Daily stylized art from Unsplash landscapes and public domain museum collections
 
 Fetches landscape photos from [Unsplash](https://unsplash.com) (default) or CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
 
-## Today's artwork
+## Set as your wallpaper
 
+A new landscape is generated every day at 8 AM Pacific. Grab it and set it in one line:
+
+**macOS**
 ```bash
-curl https://bauhaus.cascadiacollections.workers.dev/api/today -o wallpaper.jpg
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+osascript -e 'tell application "System Events" to tell every desktop to set picture to POSIX file "/tmp/bauhaus.jpg"'
 ```
+
+**Windows** (PowerShell)
+```powershell
+Invoke-WebRequest https://bauhaus.cascadiacollections.workers.dev/api/today -OutFile "$env:TEMP\bauhaus.jpg"
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class W { [DllImport("user32.dll")] public static extern int SystemParametersInfo(int a,int b,string c,int d); }'
+[W]::SystemParametersInfo(0x0014,0,"$env:TEMP\bauhaus.jpg",0x01)
+```
+
+**Linux (KDE Plasma)**
+```bash
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+dbus-send --session --dest=org.kde.plasmashell --type=method_call /PlasmaShell org.kde.PlasmaShell.evaluateScript "string:
+var d = desktops(); for (var i = 0; i < d.length; i++) { d[i].wallpaperPlugin = 'org.kde.image';
+d[i].currentConfigGroup = ['Wallpaper','org.kde.image','General']; d[i].writeConfig('Image','file:///tmp/bauhaus.jpg'); }"
+```
+
+**Linux (GNOME)**
+```bash
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+gsettings set org.gnome.desktop.background picture-uri "file:///tmp/bauhaus.jpg"
+gsettings set org.gnome.desktop.background picture-uri-dark "file:///tmp/bauhaus.jpg"
+```
+
+Automate it with a cron job, Task Scheduler, or systemd timer to get fresh art on your desktop every morning.
 
 ## How it works
 
 ```
-GitHub Actions (daily, 3 PM UTC)
+GitHub Actions (daily, 8 AM PT / 3 PM UTC)
   1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
