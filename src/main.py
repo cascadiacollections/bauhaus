@@ -225,7 +225,7 @@ def main():
 
         original_path.write_bytes(original_bytes)
         stylized_path.write_bytes(stylized_bytes)
-        metadata_path.write_text(json.dumps(metadata, indent=2))
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
         print(f"\nDry run complete:")
         print(f"  Original:  {original_path}")
