@@ -14,23 +14,34 @@ NSFW_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Met Museum departments biased toward landscapes, objects, and non-figurative art.
-# Style transfer produces better results on these vs. portraits/figures.
+# Met Museum departments biased toward landscapes and scenic art.
 MET_DEPARTMENTS = [
-    6,   # Asian Art (landscapes, ceramics, screens)
-    9,   # Drawings and Prints (landscapes, architecture)
-    15,  # Musical Instruments
-    17,  # Medieval Art (architecture, manuscripts)
-    11,  # European Paintings (includes landscapes)
+    11,  # European Paintings (landscapes, seascapes)
     21,  # Modern Art
+    6,   # Asian Art (landscapes, screens)
     19,  # Photographs
+    9,   # Drawings and Prints
 ]
 
-# Prefer landscape/object/scene subjects — skip portraits and figurative works
-PORTRAIT_PATTERN = re.compile(
+# Positive signal: title words that suggest landscapes/seascapes
+LANDSCAPE_PATTERN = re.compile(
+    r"\b(landscape|seascape|coast|shore|river|lake|sea|ocean|harbor|harbour|"
+    r"mountain|valley|field|meadow|garden|forest|wood|woods|trees|"
+    r"sunset|sunrise|morning|evening|night|sky|clouds|storm|rain|snow|winter|spring|summer|autumn|"
+    r"bridge|road|path|village|town|church|cathedral|ruins|"
+    r"view|scene|canal|pond|marsh|cliff|island|bay|cape|"
+    r"moonlight|twilight|dawn|dusk)\b",
+    re.IGNORECASE,
+)
+
+# Negative signal: skip portraits, figurative, and small objects
+SKIP_SUBJECT_PATTERN = re.compile(
     r"\b(portrait|self-portrait|bust|head of|figure|figures|"
     r"man standing|woman standing|seated man|seated woman|"
-    r"madonna|crucifixion|pietà|pieta|saint \w+)\b",
+    r"madonna|crucifixion|pietà|pieta|saint \w+|"
+    r"plate|bowl|cup|vase|jug|pitcher|teapot|bottle|"
+    r"coin|medal|badge|brooch|ring|necklace|bracelet|"
+    r"nail|sword|dagger|helmet|armor|shield)\b",
     re.IGNORECASE,
 )
 
@@ -59,8 +70,15 @@ def is_safe_title(title: str) -> bool:
 
 
 def is_preferred_subject(title: str) -> bool:
-    """Return True if the title suggests a landscape, object, or scene (not a portrait)."""
-    return not PORTRAIT_PATTERN.search(title)
+    """Return True if the title suggests a landscape/seascape (not a portrait or small object)."""
+    if SKIP_SUBJECT_PATTERN.search(title):
+        return False
+    return True
+
+
+def is_landscape(title: str) -> bool:
+    """Return True if the title strongly suggests a landscape or seascape."""
+    return bool(LANDSCAPE_PATTERN.search(title))
 
 
 def _get(url: str, timeout: int = 30) -> requests.Response:
@@ -74,9 +92,13 @@ def fetch_met() -> Artwork:
     for attempt in range(MAX_ATTEMPTS):
         try:
             dept_id = random.choice(MET_DEPARTMENTS)
+            # Search with landscape-biased terms for better results
+            query = random.choice(["landscape", "seascape", "river", "coast",
+                                   "mountain", "sunset", "harbor", "garden",
+                                   "forest", "village", "sky", "winter"])
             search = _get(
                 f"https://collectionapi.metmuseum.org/public/collection/v1/search"
-                f"?departmentId={dept_id}&hasImages=true&isPublicDomain=true&q=*",
+                f"?departmentId={dept_id}&hasImages=true&isPublicDomain=true&q={query}",
                 timeout=15,
             ).json()
 
