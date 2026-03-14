@@ -38,7 +38,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Check imports
-        run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; print('OK')"
+        run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
         working-directory: src
 
       - name: Run tests

@@ -12,6 +12,7 @@ from pathlib import Path
 from PIL import Image
 
 from fetch import fetch_artwork
+from postprocess import postprocess
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 
@@ -88,6 +89,14 @@ def main():
                         help="Background / top / bright region alpha (default: 0.9)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
+    parser.add_argument("--color-harmonize", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Apply color harmonization (default: on)")
+    parser.add_argument("--sharpen", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Apply sharpening (default: on)")
+    parser.add_argument("--upscale", action="store_true", default=False,
+                        help="Apply super-resolution upscaling (default: off)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
@@ -131,6 +140,25 @@ def main():
     stylized = model.transfer(content_img, style_img, alpha=args.alpha, alpha_mask=alpha_mask)
     print("  Style transfer complete.")
 
+    # 5. Post-processing
+    pp_enabled = args.color_harmonize or args.sharpen or args.upscale
+    if pp_enabled:
+        steps = []
+        if args.color_harmonize:
+            steps.append("color-harmonize")
+        if args.sharpen:
+            steps.append("sharpen")
+        if args.upscale:
+            steps.append("upscale")
+        print(f"Post-processing ({', '.join(steps)})...")
+        stylized = postprocess(
+            stylized, content_img,
+            harmonize=args.color_harmonize,
+            do_sharpen=args.sharpen,
+            do_upscale=args.upscale,
+        )
+        print("  Post-processing complete.")
+
     # Convert stylized to bytes
     buf = BytesIO()
     stylized.save(buf, format="JPEG", quality=95)
@@ -145,6 +173,11 @@ def main():
         metadata["fg_alpha"] = args.fg_alpha
         metadata["bg_alpha"] = args.bg_alpha
     metadata["style_mode"] = style_mode
+    metadata["postprocessing"] = {
+        "color_harmonize": args.color_harmonize,
+        "sharpen": args.sharpen,
+        "upscale": args.upscale,
+    }
 
     if args.dry_run:
         # Save locally
@@ -165,7 +198,7 @@ def main():
         print(f"  Metadata:  {metadata_path}")
         return
 
-    # 5. Upload to R2
+    # 6. Upload to R2
     print("Uploading to R2...")
     keys = upload(artwork.image_bytes, stylized_bytes, metadata)
     print("Uploaded:")
