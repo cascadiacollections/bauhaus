@@ -1,0 +1,31 @@
+<svg width="512" height="512" viewBox="0 0 280 280" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .bw { font-family: 'League Gothic', Impact, sans-serif; text-transform: uppercase; }
+    </style>
+    <clipPath id="tl"><rect x="0" y="0" width="140" height="140"/></clipPath>
+  </defs>
+
+  <!-- Ground -->
+  <rect width="280" height="280" fill="#F5F2EC"/>
+
+  <!-- Top-left quadrant: red circle clipped -->
+  <circle cx="140" cy="140" r="100" fill="#D62B2B" clip-path="url(#tl)"/>
+
+  <!-- Top-right quadrant: blue -->
+  <rect x="140" y="0" width="140" height="140" fill="#1B4FD8"/>
+
+  <!-- Bottom-left quadrant: yellow -->
+  <rect x="0" y="140" width="140" height="140" fill="#F2C200"/>
+
+  <!-- Bottom-right quadrant: off-white with wordmark -->
+  <rect x="140" y="140" width="140" height="140" fill="#F5F2EC"/>
+
+  <!-- Center cross hairlines -->
+  <line x1="140" y1="0" x2="140" y2="280" stroke="#18181A" stroke-width="2" opacity="0.15"/>
+  <line x1="0" y1="140" x2="280" y2="140" stroke="#18181A" stroke-width="2" opacity="0.15"/>
+
+  <!-- Wordmark -->
+  <text class="bw" font-size="44" fill="#18181A" x="148" y="185" dominant-baseline="central">bau</text>
+  <text class="bw" font-size="44" fill="#18181A" x="148" y="234" dominant-baseline="central">haus</text>
+</svg>
