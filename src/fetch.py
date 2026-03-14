@@ -93,15 +93,17 @@ def _get(url: str, timeout: int = 30) -> requests.Response:
     return resp
 
 
-def fetch_met() -> Artwork:
+def fetch_met(landscapes_only: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Metropolitan Museum."""
     for attempt in range(MAX_ATTEMPTS):
         try:
             dept_id = random.choice(MET_DEPARTMENTS)
-            # Search with landscape-biased terms for better results
-            query = random.choice(["landscape", "seascape", "river", "coast",
-                                   "mountain", "sunset", "harbor", "garden",
-                                   "forest", "village", "sky", "winter"])
+            if landscapes_only:
+                query = random.choice(["landscape", "seascape", "river", "coast",
+                                       "mountain", "sunset", "harbor", "garden",
+                                       "forest", "village", "sky", "winter"])
+            else:
+                query = "*"
             search = _get(
                 f"https://collectionapi.metmuseum.org/public/collection/v1/search"
                 f"?departmentId={dept_id}&hasImages=true&isPublicDomain=true&q={query}",
@@ -126,7 +128,7 @@ def fetch_met() -> Artwork:
             if not is_safe_title(title):
                 print(f"Skipping NSFW: {title}", file=sys.stderr)
                 continue
-            if not is_preferred_subject(title):
+            if landscapes_only and not is_preferred_subject(title):
                 print(f"Skipping figurative: {title}", file=sys.stderr)
                 continue
 
@@ -147,7 +149,7 @@ def fetch_met() -> Artwork:
     raise RuntimeError(f"Failed to fetch from Met Museum after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_artic() -> Artwork:
+def fetch_artic(landscapes_only: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Art Institute of Chicago."""
     for attempt in range(MAX_ATTEMPTS):
         try:
@@ -170,14 +172,14 @@ def fetch_artic() -> Artwork:
             if not is_safe_title(title):
                 print(f"Skipping NSFW: {title}", file=sys.stderr)
                 continue
-            if not is_preferred_subject(title):
+            if landscapes_only and not is_preferred_subject(title):
                 print(f"Skipping figurative: {title} [{artwork_type}]", file=sys.stderr)
                 continue
 
             # Prefer paintings, prints, drawings, photographs — skip sculptures, textiles, etc.
             good_types = {"Painting", "Print", "Drawing and Watercolor", "Photograph",
                           "Woodblock Print", "Lithograph", "Etching"}
-            if artwork_type and artwork_type not in good_types:
+            if landscapes_only and artwork_type and artwork_type not in good_types:
                 print(f"Skipping type '{artwork_type}': {title}", file=sys.stderr)
                 continue
 
@@ -201,8 +203,14 @@ def fetch_artic() -> Artwork:
     raise RuntimeError(f"Failed to fetch from AIC after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_artwork(source: str = "met") -> Artwork:
-    """Fetch artwork from the specified source."""
+def fetch_artwork(source: str = "met", landscapes_only: bool = True) -> Artwork:
+    """Fetch artwork from the specified source.
+
+    Args:
+        source: "met" or "artic"
+        landscapes_only: When True (default), bias toward landscapes/seascapes
+                         and filter out portraits, small objects, etc.
+    """
     fetchers = {
         "met": fetch_met,
         "artic": fetch_artic,
@@ -210,4 +218,4 @@ def fetch_artwork(source: str = "met") -> Artwork:
     fetcher = fetchers.get(source)
     if not fetcher:
         raise ValueError(f"Unknown source: {source}. Available: {', '.join(fetchers)}")
-    return fetcher()
+    return fetcher(landscapes_only=landscapes_only)

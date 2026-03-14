@@ -53,7 +53,7 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 ## Local development
 
-Requires [uv](https://github.com/astral-sh/uv) and Python 3.12+.
+Requires [uv](https://github.com/astral-sh/uv) and Python 3.14+.
 
 ```bash
 # Install dependencies
@@ -69,6 +69,7 @@ uv run python src/main.py --dry-run
 uv run python src/main.py --dry-run --source artic   # Art Institute of Chicago
 uv run python src/main.py --dry-run --source met      # Metropolitan Museum (default)
 uv run python src/main.py --dry-run --alpha 0.5       # subtle style (0.0-1.0)
+uv run python src/main.py --dry-run --any-subject     # disable landscape filter
 ```
 
 ### Docker
@@ -95,6 +96,7 @@ npx wrangler dev
 | `R2_SECRET_ACCESS_KEY` | R2 secret key |
 | `R2_BUCKET` | Bucket name (default: `bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
+| `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 
 ## Style references
 

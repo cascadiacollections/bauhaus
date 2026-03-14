@@ -79,13 +79,16 @@ def main():
                         help="Art source (default: met)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
+    parser.add_argument("--any-subject", action="store_true",
+                        help="Disable landscape filter, allow any subject")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
+    landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
 
     # 1. Fetch CC0 artwork
-    print(f"Fetching artwork from {args.source}...")
-    artwork = fetch_artwork(args.source)
+    print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
+    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
 
