@@ -112,7 +112,7 @@ docker run --rm -v ./output:/app/output bauhaus --dry-run
 
 ```bash
 cd worker
-npm install
+npm ci
 npx wrangler dev
 ```
 
