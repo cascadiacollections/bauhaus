@@ -1,5 +1,6 @@
 """Tests for main.py — styles manifest, style rotation, and CLI args."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -42,7 +43,6 @@ class TestMaxSizeCLIArg:
 
     def test_default_max_size(self):
         """Default --max-size should be 1024 when no env var is set."""
-        import argparse
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MAX_SIZE", None)
             parser = argparse.ArgumentParser()
@@ -53,7 +53,6 @@ class TestMaxSizeCLIArg:
 
     def test_cli_flag_overrides_default(self):
         """--max-size flag should override the default."""
-        import argparse
         parser = argparse.ArgumentParser()
         parser.add_argument("--max-size", type=int,
                             default=int(os.environ.get("MAX_SIZE", "1024")))
@@ -62,7 +61,6 @@ class TestMaxSizeCLIArg:
 
     def test_env_var_sets_default(self):
         """MAX_SIZE env var should set the default when no flag is passed."""
-        import argparse
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
             parser = argparse.ArgumentParser()
             parser.add_argument("--max-size", type=int,
@@ -72,7 +70,6 @@ class TestMaxSizeCLIArg:
 
     def test_cli_flag_overrides_env_var(self):
         """--max-size flag should override MAX_SIZE env var."""
-        import argparse
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
             parser = argparse.ArgumentParser()
             parser.add_argument("--max-size", type=int,
