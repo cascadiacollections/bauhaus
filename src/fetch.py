@@ -1,5 +1,6 @@
-"""Fetch CC0 artwork from museum APIs (Met Museum, Art Institute of Chicago)."""
+"""Fetch artwork from Unsplash and museum APIs (Met Museum, Art Institute of Chicago)."""
 
+import os
 import random
 import re
 import sys
@@ -57,11 +58,18 @@ class Artwork:
     source_url: str
     image_bytes: bytes
     content_type: str = "image/jpeg"
+    photographer: str = ""
+    photographer_url: str = ""
 
     def to_metadata(self) -> dict:
         d = asdict(self)
         del d["image_bytes"]
-        d["license"] = "CC0-1.0"
+        if self.source in ("met", "artic"):
+            d["license"] = "CC0-1.0"
+            d["license_url"] = "https://creativecommons.org/publicdomain/zero/1.0/"
+        elif self.source == "unsplash":
+            d["license"] = "Unsplash License"
+            d["license_url"] = "https://unsplash.com/license"
         return d
 
 
@@ -203,15 +211,59 @@ def fetch_artic(landscapes_only: bool = True) -> Artwork:
     raise RuntimeError(f"Failed to fetch from AIC after {MAX_ATTEMPTS} attempts")
 
 
-def fetch_artwork(source: str = "met", landscapes_only: bool = True) -> Artwork:
+def fetch_unsplash(landscapes_only: bool = True) -> Artwork:
+    """Fetch a random landscape photo from Unsplash."""
+    access_key = os.environ["UNSPLASH_ACCESS_KEY"]
+    for attempt in range(MAX_ATTEMPTS):
+        try:
+            resp = _session.get(
+                "https://api.unsplash.com/photos/random"
+                "?query=landscape&orientation=landscape",
+                headers={"Authorization": f"Client-ID {access_key}"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            description = (data.get("description") or "") + " " + (data.get("alt_description") or "")
+            if not is_safe_title(description):
+                print(f"Skipping NSFW: {description.strip()}", file=sys.stderr)
+                continue
+
+            # Download UHD image
+            raw_url = data["urls"]["raw"] + "&w=3840&q=85"
+            img_resp = _get(raw_url, timeout=60)
+
+            user = data.get("user", {})
+            title = data.get("alt_description") or data.get("description") or "Untitled"
+
+            return Artwork(
+                title=title.capitalize() if title else "Untitled",
+                artist=user.get("name", "Unknown"),
+                date="",
+                source="unsplash",
+                source_url=data["links"]["html"],
+                image_bytes=img_resp.content,
+                content_type=img_resp.headers.get("Content-Type", "image/jpeg"),
+                photographer=user.get("name", ""),
+                photographer_url=user.get("links", {}).get("html", ""),
+            )
+        except requests.RequestException as e:
+            print(f"Unsplash attempt {attempt + 1} failed: {e}", file=sys.stderr)
+
+    raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
+
+
+def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True) -> Artwork:
     """Fetch artwork from the specified source.
 
     Args:
-        source: "met" or "artic"
+        source: "unsplash", "met", or "artic"
         landscapes_only: When True (default), bias toward landscapes/seascapes
                          and filter out portraits, small objects, etc.
     """
     fetchers = {
+        "unsplash": fetch_unsplash,
         "met": fetch_met,
         "artic": fetch_artic,
     }

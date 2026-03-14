@@ -1,7 +1,7 @@
 [project]
 name = "bauhaus"
 version = "0.1.0"
-description = "CC0 daily stylized art service — AdaIN style transfer on public domain museum artwork"
+description = "Daily stylized art service — AdaIN style transfer on Unsplash and public domain museum artwork"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14"

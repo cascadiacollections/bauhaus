@@ -2,25 +2,53 @@
 
 [![Generate Daily Art](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml/badge.svg)](https://github.com/cascadiacollections/bauhaus/actions/workflows/generate.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Output: CC0-1.0](https://img.shields.io/badge/Output-CC0--1.0-brightgreen.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
+[![Output: Source-dependent](https://img.shields.io/badge/Output-Source--dependent-yellow.svg)](#licensing)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776ab.svg)](https://python.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-Daily stylized art from public domain museum collections. CC0 in, CC0 out.
+Daily stylized art from Unsplash landscapes and public domain museum collections.
 
-Fetches CC0 landscapes and seascapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
+Fetches landscape photos from [Unsplash](https://unsplash.com) (default) or CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
 
-## Today's artwork
+## Set as your wallpaper
 
+A new landscape is generated every day overnight (4 AM UTC). Grab it and set it in one line:
+
+**macOS**
 ```bash
-curl https://bauhaus.cascadiacollections.workers.dev/api/today -o wallpaper.jpg
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+osascript -e 'tell application "System Events" to tell every desktop to set picture to POSIX file "/tmp/bauhaus.jpg"'
 ```
+
+**Windows** (PowerShell)
+```powershell
+Invoke-WebRequest https://bauhaus.cascadiacollections.workers.dev/api/today -OutFile "$env:TEMP\bauhaus.jpg"
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class W { [DllImport("user32.dll")] public static extern int SystemParametersInfo(int a,int b,string c,int d); }'
+[W]::SystemParametersInfo(0x0014,0,"$env:TEMP\bauhaus.jpg",0x01)
+```
+
+**Linux (KDE Plasma)**
+```bash
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+dbus-send --session --dest=org.kde.plasmashell --type=method_call /PlasmaShell org.kde.PlasmaShell.evaluateScript "string:
+var d = desktops(); for (var i = 0; i < d.length; i++) { d[i].wallpaperPlugin = 'org.kde.image';
+d[i].currentConfigGroup = ['Wallpaper','org.kde.image','General']; d[i].writeConfig('Image','file:///tmp/bauhaus.jpg'); }"
+```
+
+**Linux (GNOME)**
+```bash
+curl -sfo /tmp/bauhaus.jpg https://bauhaus.cascadiacollections.workers.dev/api/today
+gsettings set org.gnome.desktop.background picture-uri "file:///tmp/bauhaus.jpg"
+gsettings set org.gnome.desktop.background picture-uri-dark "file:///tmp/bauhaus.jpg"
+```
+
+Automate it with a cron job, Task Scheduler, or systemd timer to get fresh art on your desktop every morning.
 
 ## How it works
 
 ```
-GitHub Actions (daily, 3 PM UTC)
-  1. Fetch random CC0 landscape from Met/AIC APIs
+GitHub Actions (daily, 4 AM UTC / 8 PM PT)
+  1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
   4. Upload original + stylized + metadata to Cloudflare R2
@@ -66,8 +94,9 @@ bash models/download_models.sh
 uv run python src/main.py --dry-run
 
 # Options
-uv run python src/main.py --dry-run --source artic   # Art Institute of Chicago
-uv run python src/main.py --dry-run --source met      # Metropolitan Museum (default)
+uv run python src/main.py --dry-run --source unsplash  # Unsplash landscape (default)
+uv run python src/main.py --dry-run --source met      # Metropolitan Museum
+uv run python src/main.py --dry-run --source artic    # Art Institute of Chicago
 uv run python src/main.py --dry-run --alpha 0.5       # subtle style (0.0-1.0)
 uv run python src/main.py --dry-run --any-subject     # disable landscape filter
 ```
@@ -83,7 +112,7 @@ docker run --rm -v ./output:/app/output bauhaus --dry-run
 
 ```bash
 cd worker
-npm install
+npm ci
 npx wrangler dev
 ```
 
@@ -96,6 +125,7 @@ npx wrangler dev
 | `R2_SECRET_ACCESS_KEY` | R2 secret key |
 | `R2_BUCKET` | Bucket name (default: `bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
+| `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 
 ## Style references
@@ -109,8 +139,9 @@ Monet, Hokusai, Cezanne, Turner, Hiroshige, Seurat, Degas, Klimt, Van Gogh, Gaug
 | Component | License |
 |-----------|---------|
 | Code | MIT |
-| Input art | CC0 (Met Museum, AIC public domain collections) |
-| Style references | CC0 (same sources) |
+| Input art (Unsplash) | [Unsplash License](https://unsplash.com/license) (allows derivatives and commercial use) |
+| Input art (Met/AIC) | CC0 (public domain collections) |
+| Style references | CC0 (same museum sources) |
 | AdaIN model | MIT ([naoto0804/pytorch-AdaIN](https://github.com/naoto0804/pytorch-AdaIN)) |
 | VGG-19 encoder | BSD-like (torchvision) |
-| **Output images** | **CC0-1.0** |
+| **Output images** | **Source-dependent** (CC0-1.0 for museum sources, Unsplash License for Unsplash) |

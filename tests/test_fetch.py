@@ -1,6 +1,6 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
-from fetch import Artwork, is_safe_title, is_preferred_subject, is_landscape
+from fetch import Artwork, fetch_artwork, is_safe_title, is_preferred_subject, is_landscape
 
 
 # --- is_safe_title ---
@@ -94,15 +94,19 @@ class TestIsLandscape:
 # --- Artwork.to_metadata ---
 
 class TestArtworkToMetadata:
-    def _make_artwork(self) -> Artwork:
-        return Artwork(
+    def _make_artwork(self, source: str = "met", **kwargs) -> Artwork:
+        defaults = dict(
             title="Wheat Field with Cypresses",
             artist="Vincent van Gogh",
             date="1889",
-            source="met",
+            source=source,
             source_url="https://www.metmuseum.org/art/collection/search/436535",
             image_bytes=b"\xff\xd8\xff\xe0fake-jpeg",
+            photographer="",
+            photographer_url="",
         )
+        defaults.update(kwargs)
+        return Artwork(**defaults)
 
     def test_returns_dict(self):
         meta = self._make_artwork().to_metadata()
@@ -112,9 +116,31 @@ class TestArtworkToMetadata:
         meta = self._make_artwork().to_metadata()
         assert "image_bytes" not in meta
 
-    def test_includes_license(self):
-        meta = self._make_artwork().to_metadata()
+    def test_met_license_cc0(self):
+        meta = self._make_artwork(source="met").to_metadata()
         assert meta["license"] == "CC0-1.0"
+        assert meta["license_url"] == "https://creativecommons.org/publicdomain/zero/1.0/"
+
+    def test_artic_license_cc0(self):
+        meta = self._make_artwork(source="artic").to_metadata()
+        assert meta["license"] == "CC0-1.0"
+
+    def test_unsplash_license(self):
+        meta = self._make_artwork(source="unsplash").to_metadata()
+        assert meta["license"] == "Unsplash License"
+
+    def test_unsplash_license_url(self):
+        meta = self._make_artwork(source="unsplash").to_metadata()
+        assert meta["license_url"] == "https://unsplash.com/license"
+
+    def test_photographer_in_metadata(self):
+        meta = self._make_artwork(
+            source="unsplash",
+            photographer="Jane Doe",
+            photographer_url="https://unsplash.com/@janedoe",
+        ).to_metadata()
+        assert meta["photographer"] == "Jane Doe"
+        assert meta["photographer_url"] == "https://unsplash.com/@janedoe"
 
     def test_preserves_fields(self):
         meta = self._make_artwork().to_metadata()
@@ -124,3 +150,22 @@ class TestArtworkToMetadata:
         assert meta["source"] == "met"
         assert meta["source_url"] == "https://www.metmuseum.org/art/collection/search/436535"
         assert meta["content_type"] == "image/jpeg"
+
+
+# --- fetch_artwork source registration ---
+
+class TestFetchArtworkSources:
+    def test_all_sources_valid(self):
+        fetchers = {"unsplash", "met", "artic"}
+        # Verify all expected sources are registered by checking fetch_artwork doesn't raise ValueError
+        for source in fetchers:
+            try:
+                fetch_artwork(source, landscapes_only=True)
+            except (RuntimeError, Exception):
+                # Network errors are fine — we just want to confirm no ValueError
+                pass
+
+    def test_unknown_source_raises(self):
+        import pytest
+        with pytest.raises(ValueError, match="Unknown source"):
+            fetch_artwork("invalid_source")

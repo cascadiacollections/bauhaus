@@ -12,7 +12,7 @@ permissions:
   deployments: write
 
 env:
-  NODE_VERSION: '22'
+  NODE_VERSION: '24'
   WORKER_URL: 'https://bauhaus.cascadiacollections.workers.dev'
 
 concurrency:
@@ -25,12 +25,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           sparse-checkout: worker
           sparse-checkout-cone-mode: true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -50,8 +50,8 @@ jobs:
         run: |
           sleep 3
           STATUS=$(curl -sf --retry 2 --retry-delay 2 --max-time 10 "${{ env.WORKER_URL }}/api/today.json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('license',''))" || echo "FAILED")
-          if [ "$STATUS" != "CC0-1.0" ]; then
-            echo "::error::Health check failed"
+          if [ "$STATUS" != "CC0-1.0" ] && [ "$STATUS" != "Unsplash License" ]; then
+            echo "::error::Health check failed — unexpected license: $STATUS"
             exit 1
           fi
-          echo "::notice::Deploy successful - API returning CC0 metadata"
+          echo "::notice::Deploy successful - API returning valid license: $STATUS"

@@ -3,23 +3,28 @@ name: Generate Daily Art
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 15 * * *'  # 3 PM UTC (8 AM PDT)
+    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
 
 jobs:
   generate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py3.14-${{ hashFiles('uv.lock') }}
+
+      - uses: actions/cache@v5
         with:
           path: models/weights
           key: adain-models-v1
@@ -31,11 +36,12 @@ jobs:
         run: bash models/download_models.sh
 
       - name: Generate and upload
-        run: uv run python src/main.py
+        run: uv run python src/main.py --source unsplash
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET: bauhaus
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'
