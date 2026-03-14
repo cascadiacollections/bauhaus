@@ -35,11 +35,14 @@ jobs:
           python-version: '3.14'
 
       - name: Install dependencies
-        run: uv sync --frozen --no-dev
+        run: uv sync --frozen
 
       - name: Check imports
         run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; print('OK')"
         working-directory: src
+
+      - name: Run tests
+        run: uv run pytest -v
 
   worker:
     name: Worker (typecheck)
