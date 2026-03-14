@@ -1,99 +1,95 @@
 """Image quality scoring for source filtering.
 
-Evaluates fetched images on resolution, aspect ratio, and sharpness
-to reject low-quality sources before stylization.
+Lightweight quality metrics evaluated on CPU using Pillow only.
+Used to reject low-quality source images before style transfer.
 """
 
-from io import BytesIO
+from PIL import Image, ImageFilter
 
-from PIL import Image, ImageFilter, ImageStat
-
-# Minimum width or height in pixels.
+# Minimum acceptable image dimensions (width or height).
 MIN_DIMENSION = 512
 
-# Maximum aspect ratio (long side / short side).
-MAX_ASPECT_RATIO = 3.0
+# Minimum sharpness score (Laplacian variance).  Images below this
+# threshold are likely too blurry to produce good stylized output.
+MIN_SHARPNESS = 100.0
 
-# Minimum sharpness score (Laplacian variance).
-# Conservative threshold — rejects only very blurry images.
-MIN_SHARPNESS = 50.0
+# Acceptable aspect-ratio range (width / height).
+# Extremely tall or wide images don't look good as wallpapers.
+MIN_ASPECT_RATIO = 0.5   # 1:2 portrait
+MAX_ASPECT_RATIO = 3.0   # 3:1 panoramic
 
 
-def compute_sharpness(image: Image.Image) -> float:
-    """Compute sharpness via Laplacian variance.
+def sharpness_score(image: Image.Image) -> float:
+    """Estimate image sharpness via Laplacian-like edge energy.
 
-    Converts image to grayscale, applies a Laplacian filter,
-    and returns the variance of the result.  Higher values
-    indicate sharper images.
+    Applies a 3×3 edge-detection kernel and returns the variance of the
+    result.  Higher values indicate sharper images.
 
-    Args:
-        image: Input PIL Image.
-
-    Returns:
-        Laplacian variance (float).  Typical ranges:
-        < 50 — very blurry, 50-200 — moderate, 200+ — sharp.
+    The image is down-sampled to 512px (longest side) before scoring to
+    keep computation fast and resolution-independent.  Border pixels
+    (which produce artifacts from the convolution kernel) are excluded.
     """
-    gray = image.convert("L")
-    laplacian = gray.filter(ImageFilter.Kernel(
-        size=(3, 3),
-        kernel=[-1, -1, -1, -1, 8, -1, -1, -1, -1],
-        scale=1,
-        offset=128,
-    ))
-    stat = ImageStat.Stat(laplacian)
-    return stat.var[0]
+    img = image.convert("L")
+
+    # Down-sample for consistent, fast scoring
+    w, h = img.size
+    scale = min(512 / max(w, h), 1.0)
+    if scale < 1.0:
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    edges = img.filter(ImageFilter.FIND_EDGES)
+
+    # Crop 2px border to avoid convolution boundary artifacts
+    ew, eh = edges.size
+    if ew > 4 and eh > 4:
+        edges = edges.crop((2, 2, ew - 2, eh - 2))
+
+    pixels = list(edges.getdata())
+    n = len(pixels)
+    if n == 0:
+        return 0.0
+
+    mean = sum(pixels) / n
+    variance = sum((p - mean) ** 2 for p in pixels) / n
+    return variance
 
 
-def check_resolution(width: int, height: int, min_dim: int = MIN_DIMENSION) -> bool:
-    """Return True if both dimensions meet the minimum."""
-    return width >= min_dim and height >= min_dim
+def check_resolution(image: Image.Image, min_dim: int = MIN_DIMENSION) -> bool:
+    """Return True if both dimensions meet the minimum threshold."""
+    w, h = image.size
+    return w >= min_dim and h >= min_dim
 
 
 def check_aspect_ratio(
-    width: int, height: int, max_ratio: float = MAX_ASPECT_RATIO,
+    image: Image.Image,
+    min_ratio: float = MIN_ASPECT_RATIO,
+    max_ratio: float = MAX_ASPECT_RATIO,
 ) -> bool:
-    """Return True if aspect ratio is within acceptable range."""
-    if width <= 0 or height <= 0:
+    """Return True if the aspect ratio is within an acceptable range."""
+    w, h = image.size
+    if h == 0:
         return False
-    ratio = max(width, height) / min(width, height)
-    return ratio <= max_ratio
+    ratio = w / h
+    return min_ratio <= ratio <= max_ratio
 
 
-def passes_quality_gate(
-    image_bytes: bytes,
-    *,
-    min_dimension: int = MIN_DIMENSION,
-    max_aspect_ratio: float = MAX_ASPECT_RATIO,
-    min_sharpness: float = MIN_SHARPNESS,
-) -> tuple[bool, str]:
-    """Check if an image passes quality requirements.
+def score_image(image: Image.Image) -> dict:
+    """Compute all quality metrics for an image.
 
-    Args:
-        image_bytes: Raw image bytes (JPEG, PNG, etc.).
-        min_dimension: Minimum width and height in pixels.
-        max_aspect_ratio: Maximum long/short side ratio.
-        min_sharpness: Minimum Laplacian variance.
-
-    Returns:
-        Tuple of (passed, reason).  If passed is True, reason is empty.
-        If passed is False, reason describes why the image was rejected.
+    Returns a dict with individual scores and an overall ``pass`` bool.
     """
-    try:
-        img = Image.open(BytesIO(image_bytes))
-    except Exception:
-        return False, "could not decode image"
+    w, h = image.size
+    sharpness = sharpness_score(image)
+    res_ok = check_resolution(image)
+    ar_ok = check_aspect_ratio(image)
+    sharp_ok = sharpness >= MIN_SHARPNESS
 
-    width, height = img.size
-
-    if not check_resolution(width, height, min_dimension):
-        return False, f"resolution too low ({width}x{height}, min {min_dimension})"
-
-    if not check_aspect_ratio(width, height, max_aspect_ratio):
-        ratio = max(width, height) / min(width, height)
-        return False, f"aspect ratio too extreme ({ratio:.1f}:1, max {max_aspect_ratio}:1)"
-
-    sharpness = compute_sharpness(img.convert("RGB"))
-    if sharpness < min_sharpness:
-        return False, f"too blurry (sharpness={sharpness:.1f}, min {min_sharpness})"
-
-    return True, ""
+    return {
+        "width": w,
+        "height": h,
+        "sharpness": round(sharpness, 2),
+        "resolution_ok": res_ok,
+        "aspect_ratio_ok": ar_ok,
+        "sharpness_ok": sharp_ok,
+        "pass": res_ok and ar_ok and sharp_ok,
+    }

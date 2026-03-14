@@ -1,185 +1,156 @@
-"""Tests for quality.py — image quality scoring and gating."""
+"""Tests for quality.py — image quality scoring for source filtering."""
 
-from io import BytesIO
-
-from PIL import Image, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter
 
 from quality import (
+    MIN_ASPECT_RATIO,
     MIN_DIMENSION,
-    MAX_ASPECT_RATIO,
     MIN_SHARPNESS,
     check_aspect_ratio,
     check_resolution,
-    compute_sharpness,
-    passes_quality_gate,
+    score_image,
+    sharpness_score,
 )
 
 
-def _make_image(width: int, height: int, color: tuple = (128, 128, 128)) -> Image.Image:
-    """Create a solid-color test image."""
-    return Image.new("RGB", (width, height), color)
+# --- helpers ---
+
+def _solid_image(color: tuple[int, int, int], size: tuple[int, int] = (64, 64)) -> Image.Image:
+    return Image.new("RGB", size, color)
 
 
-def _make_noisy_image(width: int, height: int, seed: int = 42) -> Image.Image:
-    """Create a noisy test image with high sharpness."""
-    import random as rng
-    rng.seed(seed)
-    img = Image.new("RGB", (width, height))
-    pixels = [(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255))
-               for _ in range(width * height)]
-    img.putdata(pixels)
+def _sharp_image(size: tuple[int, int] = (640, 480)) -> Image.Image:
+    """Create an image with high-contrast edges (high sharpness)."""
+    img = Image.new("RGB", size, (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    w, h = size
+    for i in range(0, w, 10):
+        draw.line([(i, 0), (i, h)], fill=(0, 0, 0), width=2)
+    for j in range(0, h, 10):
+        draw.line([(0, j), (w, j)], fill=(0, 0, 0), width=2)
     return img
 
 
-def _to_bytes(img: Image.Image, fmt: str = "JPEG") -> bytes:
-    """Encode a PIL Image to bytes."""
-    buf = BytesIO()
-    img.save(buf, format=fmt)
-    return buf.getvalue()
+def _blurry_image(size: tuple[int, int] = (640, 480)) -> Image.Image:
+    """Create a very blurry (low sharpness) image."""
+    img = _solid_image((128, 128, 128), size)
+    for _ in range(10):
+        img = img.filter(ImageFilter.GaussianBlur(radius=5))
+    return img
+
+
+# --- sharpness_score ---
+
+class TestSharpnessScore:
+    def test_returns_float(self):
+        img = _solid_image((100, 100, 100), (64, 64))
+        score = sharpness_score(img)
+        assert isinstance(score, float)
+
+    def test_solid_image_low_sharpness(self):
+        img = _solid_image((100, 100, 100), (64, 64))
+        score = sharpness_score(img)
+        assert score < MIN_SHARPNESS
+
+    def test_sharp_image_high_sharpness(self):
+        img = _sharp_image()
+        score = sharpness_score(img)
+        assert score > MIN_SHARPNESS
+
+    def test_blurry_image_low_sharpness(self):
+        img = _blurry_image()
+        score = sharpness_score(img)
+        assert score < MIN_SHARPNESS
+
+    def test_nonnegative(self):
+        img = _solid_image((0, 0, 0), (32, 32))
+        assert sharpness_score(img) >= 0.0
 
 
 # --- check_resolution ---
 
 class TestCheckResolution:
-    def test_meets_minimum(self):
-        assert check_resolution(1024, 768) is True
+    def test_large_image_passes(self):
+        img = _solid_image((0, 0, 0), (1024, 768))
+        assert check_resolution(img) is True
 
-    def test_exact_minimum(self):
-        assert check_resolution(MIN_DIMENSION, MIN_DIMENSION) is True
+    def test_exact_minimum_passes(self):
+        img = _solid_image((0, 0, 0), (MIN_DIMENSION, MIN_DIMENSION))
+        assert check_resolution(img) is True
 
-    def test_below_minimum_width(self):
-        assert check_resolution(256, 1024) is False
+    def test_too_small_fails(self):
+        img = _solid_image((0, 0, 0), (256, 256))
+        assert check_resolution(img) is False
 
-    def test_below_minimum_height(self):
-        assert check_resolution(1024, 256) is False
-
-    def test_both_below(self):
-        assert check_resolution(100, 100) is False
+    def test_one_dimension_too_small(self):
+        img = _solid_image((0, 0, 0), (1024, 100))
+        assert check_resolution(img) is False
 
     def test_custom_min_dim(self):
-        assert check_resolution(200, 200, min_dim=200) is True
-        assert check_resolution(199, 200, min_dim=200) is False
+        img = _solid_image((0, 0, 0), (100, 100))
+        assert check_resolution(img, min_dim=50) is True
 
 
 # --- check_aspect_ratio ---
 
 class TestCheckAspectRatio:
+    def test_normal_landscape(self):
+        img = _solid_image((0, 0, 0), (1920, 1080))
+        assert check_aspect_ratio(img) is True
+
     def test_square(self):
-        assert check_aspect_ratio(1000, 1000) is True
+        img = _solid_image((0, 0, 0), (500, 500))
+        assert check_aspect_ratio(img) is True
 
-    def test_standard_landscape(self):
-        # 16:9 ≈ 1.78:1
-        assert check_aspect_ratio(1920, 1080) is True
+    def test_extreme_panoramic_fails(self):
+        img = _solid_image((0, 0, 0), (4000, 100))
+        assert check_aspect_ratio(img) is False
 
-    def test_standard_portrait(self):
-        assert check_aspect_ratio(1080, 1920) is True
+    def test_extreme_portrait_fails(self):
+        img = _solid_image((0, 0, 0), (100, 4000))
+        assert check_aspect_ratio(img) is False
 
-    def test_extreme_panorama(self):
-        # 4:1 exceeds default 3:1
-        assert check_aspect_ratio(4000, 1000) is False
-
-    def test_extreme_tall(self):
-        assert check_aspect_ratio(500, 2000) is False
-
-    def test_exact_limit(self):
-        assert check_aspect_ratio(3000, 1000, max_ratio=3.0) is True
-
-    def test_zero_dimension(self):
-        assert check_aspect_ratio(0, 1000) is False
-        assert check_aspect_ratio(1000, 0) is False
-
-    def test_negative_dimension(self):
-        assert check_aspect_ratio(-1, 1000) is False
+    def test_zero_height(self):
+        # Edge case — 100×1 gives ratio 100 which exceeds MAX_ASPECT_RATIO
+        img = _solid_image((0, 0, 0), (100, 1))
+        assert check_aspect_ratio(img) is False
 
 
-# --- compute_sharpness ---
-
-class TestComputeSharpness:
-    def test_solid_color_is_low(self):
-        # A solid-color image has zero edges → very low sharpness
-        img = _make_image(800, 600)
-        sharpness = compute_sharpness(img)
-        assert sharpness < 10.0
-
-    def test_noisy_image_is_high(self):
-        # High-frequency noise → high Laplacian variance
-        img = _make_noisy_image(800, 600)
-        sharpness = compute_sharpness(img)
-        assert sharpness > 100.0
-
-    def test_blurred_is_lower_than_sharp(self):
-        img = _make_noisy_image(800, 600)
-
-        sharp = compute_sharpness(img)
-        blurred_img = img.filter(ImageFilter.GaussianBlur(radius=10))
-        blurry = compute_sharpness(blurred_img)
-        assert blurry < sharp
-
-    def test_returns_float(self):
-        img = _make_image(200, 200)
-        assert isinstance(compute_sharpness(img), float)
+    def test_boundary_min(self):
+        img = _solid_image((0, 0, 0), (50, 100))  # 0.5 ratio = MIN_ASPECT_RATIO
+        assert check_aspect_ratio(img) is True
 
 
-# --- passes_quality_gate ---
+# --- score_image ---
 
-class TestPassesQualityGate:
+class TestScoreImage:
+    def test_returns_dict(self):
+        img = _sharp_image((800, 600))
+        result = score_image(img)
+        assert isinstance(result, dict)
+
     def test_good_image_passes(self):
-        # Create a sharp, large image with some texture
-        img = _make_noisy_image(1024, 768)
-        passed, reason = passes_quality_gate(_to_bytes(img))
-        assert passed is True
-        assert reason == ""
+        img = _sharp_image((800, 600))
+        result = score_image(img)
+        assert result["pass"] is True
+        assert result["resolution_ok"] is True
+        assert result["aspect_ratio_ok"] is True
+        assert result["sharpness_ok"] is True
 
-    def test_too_small_fails(self):
-        img = _make_image(200, 200)
-        passed, reason = passes_quality_gate(_to_bytes(img))
-        assert passed is False
-        assert "resolution too low" in reason
+    def test_small_image_fails(self):
+        img = _sharp_image((200, 200))
+        result = score_image(img)
+        assert result["resolution_ok"] is False
+        assert result["pass"] is False
 
-    def test_extreme_aspect_ratio_fails(self):
-        img = _make_image(2000, 600)
-        passed, reason = passes_quality_gate(_to_bytes(img), min_sharpness=0.0)
-        assert passed is False
-        assert "aspect ratio too extreme" in reason
+    def test_includes_dimensions(self):
+        img = _solid_image((0, 0, 0), (640, 480))
+        result = score_image(img)
+        assert result["width"] == 640
+        assert result["height"] == 480
 
-    def test_blurry_image_fails(self):
-        # Solid color → zero sharpness → rejected
-        img = _make_image(1024, 768)
-        passed, reason = passes_quality_gate(_to_bytes(img))
-        assert passed is False
-        assert "too blurry" in reason
-
-    def test_invalid_bytes_fails(self):
-        passed, reason = passes_quality_gate(b"not-an-image")
-        assert passed is False
-        assert "could not decode" in reason
-
-    def test_custom_thresholds(self):
-        # Solid-color image passes if we set sharpness threshold to 0
-        img = _make_image(1024, 768)
-        passed, reason = passes_quality_gate(
-            _to_bytes(img), min_sharpness=0.0,
-        )
-        assert passed is True
-
-    def test_custom_min_dimension(self):
-        img = _make_image(300, 300)
-        # Fails with default min_dimension (512)
-        passed, _ = passes_quality_gate(_to_bytes(img))
-        assert passed is False
-        # Passes with lower threshold
-        passed, _ = passes_quality_gate(
-            _to_bytes(img), min_dimension=200, min_sharpness=0.0,
-        )
-        assert passed is True
-
-    def test_returns_tuple(self):
-        img = _make_image(1024, 768)
-        result = passes_quality_gate(_to_bytes(img))
-        assert isinstance(result, tuple)
-        assert len(result) == 2
-
-    def test_png_format(self):
-        img = _make_noisy_image(1024, 768)
-        passed, reason = passes_quality_gate(_to_bytes(img, fmt="PNG"))
-        assert passed is True
+    def test_includes_sharpness(self):
+        img = _solid_image((0, 0, 0), (640, 480))
+        result = score_image(img)
+        assert "sharpness" in result
+        assert isinstance(result["sharpness"], float)

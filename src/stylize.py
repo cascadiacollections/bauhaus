@@ -99,13 +99,61 @@ _to_tensor = transforms.Compose([
 ])
 
 
-def _load_image(img: Image.Image, max_size: int = 768) -> torch.Tensor:
+def _load_image(img: Image.Image, max_size: int = 1920) -> torch.Tensor:
     """Resize and convert PIL Image to tensor."""
     w, h = img.size
     scale = min(max_size / max(w, h), 1.0)
     if scale < 1.0:
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
     return _to_tensor(img).unsqueeze(0)
+
+
+def gradient_alpha_mask(height: int, width: int, top: float = 1.0, bottom: float = 0.5) -> torch.Tensor:
+    """Create a vertical gradient alpha mask (stronger style at top, lighter at bottom).
+
+    Useful for landscape images where sky (top) should receive heavier
+    stylization and foreground structures (bottom) should preserve more detail.
+
+    Returns a tensor of shape ``(1, 1, height, width)`` suitable for
+    element-wise multiplication with feature maps.
+    """
+    ramp = torch.linspace(top, bottom, height).view(1, 1, height, 1).expand(1, 1, height, width)
+    return ramp
+
+
+def luminance_alpha_mask(
+    content_tensor: torch.Tensor,
+    bright_alpha: float = 1.0,
+    dark_alpha: float = 0.5,
+) -> torch.Tensor:
+    """Create an alpha mask based on content luminance.
+
+    Bright regions (sky, highlights) receive ``bright_alpha`` and dark
+    regions (shadows, foreground) receive ``dark_alpha``.  Intermediate
+    values are linearly interpolated.
+
+    Args:
+        content_tensor: Content image tensor of shape ``(1, 3, H, W)``.
+        bright_alpha: Alpha for the brightest regions.
+        dark_alpha: Alpha for the darkest regions.
+
+    Returns:
+        Tensor of shape ``(1, 1, H, W)``.
+    """
+    # ITU-R BT.601 luminance
+    luminance = (
+        0.299 * content_tensor[:, 0:1]
+        + 0.587 * content_tensor[:, 1:2]
+        + 0.114 * content_tensor[:, 2:3]
+    )
+    # Normalize to [0, 1]
+    lo = luminance.min()
+    hi = luminance.max()
+    if hi - lo > 1e-6:
+        luminance = (luminance - lo) / (hi - lo)
+    else:
+        luminance = torch.ones_like(luminance) * 0.5
+    return dark_alpha + (bright_alpha - dark_alpha) * luminance
 
 
 class StyleTransfer:
@@ -123,8 +171,18 @@ class StyleTransfer:
         style: Image.Image,
         alpha: float = 0.8,
         max_size: int = 1920,
+        alpha_mode: str = "uniform",
     ) -> Image.Image:
-        """Apply style transfer. Returns stylized PIL Image at original content size."""
+        """Apply style transfer. Returns stylized PIL Image at original content size.
+
+        Args:
+            content: Content image.
+            style: Style reference image.
+            alpha: Base style strength 0.0–1.0.
+            max_size: Maximum processing resolution in pixels.
+            alpha_mode: Blending mode — ``"uniform"`` (default), ``"gradient"``,
+                or ``"luminance"``.
+        """
         orig_w, orig_h = content.size
         content_tensor = _load_image(content, max_size)
         style_tensor = _load_image(style, max_size)
@@ -133,7 +191,22 @@ class StyleTransfer:
         style_feat = self.encoder(style_tensor)
 
         adain_feat = _adaptive_instance_norm(content_feat, style_feat)
-        blended = alpha * adain_feat + (1 - alpha) * content_feat
+
+        if alpha_mode == "gradient":
+            _, _, fh, fw = content_feat.shape
+            mask = gradient_alpha_mask(fh, fw, top=alpha, bottom=alpha * 0.5)
+            blended = mask * adain_feat + (1 - mask) * content_feat
+        elif alpha_mode == "luminance":
+            mask = luminance_alpha_mask(
+                content_tensor, bright_alpha=alpha, dark_alpha=alpha * 0.5,
+            )
+            # Downsample mask to feature-map resolution
+            mask = torch.nn.functional.interpolate(
+                mask, size=content_feat.shape[2:], mode="bilinear", align_corners=False,
+            )
+            blended = mask * adain_feat + (1 - mask) * content_feat
+        else:
+            blended = alpha * adain_feat + (1 - alpha) * content_feat
 
         output = self.decoder(blended)
         output = output.clamp(0, 1).squeeze(0)

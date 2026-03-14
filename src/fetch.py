@@ -8,8 +8,9 @@ from dataclasses import dataclass, asdict
 from io import BytesIO
 
 import requests
+from PIL import Image
 
-from quality import passes_quality_gate
+from quality import score_image
 
 NSFW_PATTERN = re.compile(
     r"\b(nude|naked|bather|bathers|bathing|odalisque|venus|cupid|"
@@ -103,6 +104,28 @@ def _get(url: str, timeout: int = 30) -> requests.Response:
     return resp
 
 
+def _check_quality(image_bytes: bytes) -> tuple[bool, str]:
+    """Run quality scoring on raw image bytes.
+
+    Returns (passed, reason).  If passed is True, reason is empty.
+    """
+    try:
+        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        return False, "could not decode image"
+    result = score_image(img)
+    if not result["pass"]:
+        reasons = []
+        if not result["resolution_ok"]:
+            reasons.append(f"resolution {result['width']}x{result['height']}")
+        if not result["aspect_ratio_ok"]:
+            reasons.append(f"aspect ratio {result['width']}:{result['height']}")
+        if not result["sharpness_ok"]:
+            reasons.append(f"sharpness={result['sharpness']}")
+        return False, ", ".join(reasons)
+    return True, ""
+
+
 def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Metropolitan Museum."""
     for attempt in range(MAX_ATTEMPTS):
@@ -145,7 +168,7 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
             img_resp = _get(img_url, timeout=60)
 
             if quality_gate:
-                passed, reason = passes_quality_gate(img_resp.content)
+                passed, reason = _check_quality(img_resp.content)
                 if not passed:
                     print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
                     continue
@@ -205,7 +228,7 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
             img_resp = _get(iiif_url, timeout=60)
 
             if quality_gate:
-                passed, reason = passes_quality_gate(img_resp.content)
+                passed, reason = _check_quality(img_resp.content)
                 if not passed:
                     print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
                     continue
@@ -249,7 +272,7 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
             img_resp = _get(raw_url, timeout=60)
 
             if quality_gate:
-                passed, reason = passes_quality_gate(img_resp.content)
+                passed, reason = _check_quality(img_resp.content)
                 if not passed:
                     print(f"Quality gate rejected: {reason}", file=sys.stderr)
                     continue
@@ -282,7 +305,7 @@ def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, qualit
         landscapes_only: When True (default), bias toward landscapes/seascapes
                          and filter out portraits, small objects, etc.
         quality_gate: When True (default), reject images that fail resolution,
-                      aspect ratio, or sharpness checks.
+                      aspect ratio, or sharpness checks during fetching.
     """
     fetchers = {
         "unsplash": fetch_unsplash,

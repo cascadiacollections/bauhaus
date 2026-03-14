@@ -13,6 +13,7 @@ from PIL import Image
 
 from fetch import fetch_artwork
 from postprocess import postprocess
+from quality import score_image
 from stylize import StyleTransfer
 from upload import upload
 
@@ -99,8 +100,13 @@ def main():
                         help="Art source (default: unsplash)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
+    parser.add_argument("--alpha-mode", default="uniform",
+                        choices=["uniform", "gradient", "luminance"],
+                        help="Alpha blending mode (default: uniform)")
     parser.add_argument("--any-subject", action="store_true",
                         help="Disable landscape filter, allow any subject")
+    parser.add_argument("--skip-quality-check", action="store_true",
+                        help="Skip image quality scoring (sharpness, resolution, aspect ratio)")
     parser.add_argument("--color-harmonize", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Apply color harmonization (default: on)")
@@ -109,19 +115,28 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
-    parser.add_argument("--no-quality-gate", action="store_true", default=False,
-                        help="Disable image quality gate (resolution, sharpness checks)")
+    parser.add_argument("--max-size", type=int, default=1920,
+                        help="Max processing resolution in pixels (default: 1920)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
-    quality_gate = not args.no_quality_gate
 
     # 1. Fetch CC0 artwork
+    quality_gate = not args.skip_quality_check
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
     artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
+
+    # 1b. Quality gate
+    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    if not args.skip_quality_check:
+        qscore = score_image(content_img)
+        print(f"  Quality: sharpness={qscore['sharpness']}, "
+              f"{qscore['width']}×{qscore['height']}, pass={qscore['pass']}")
+        if not qscore["pass"]:
+            print("  ⚠ Source image failed quality check — proceeding anyway", file=sys.stderr)
 
     # 2. Pick style reference
     print(f"Picking style reference (mode={style_mode})...")
@@ -134,9 +149,12 @@ def main():
 
     # 4. Apply AdaIN style transfer
     print("Applying style transfer...")
-    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     model = StyleTransfer()
-    stylized = model.transfer(content_img, style_img, alpha=args.alpha)
+    stylized = model.transfer(
+        content_img, style_img,
+        alpha=args.alpha, max_size=args.max_size,
+        alpha_mode=args.alpha_mode,
+    )
     print("  Style transfer complete.")
 
     # 5. Post-processing
@@ -162,6 +180,7 @@ def main():
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
     metadata["alpha"] = args.alpha
+    metadata["alpha_mode"] = args.alpha_mode
     metadata["style_mode"] = style_mode
     metadata["postprocessing"] = {
         "color_harmonize": args.color_harmonize,
