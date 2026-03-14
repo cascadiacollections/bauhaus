@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import random
-import subprocess
 import sys
 from datetime import date
 from io import BytesIO
@@ -83,12 +82,20 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
 
 
 def ensure_models():
-    """Download model weights if not present."""
+    """Download model weights if not present (cross-platform)."""
     weights_dir = Path(__file__).resolve().parent.parent / "models" / "weights"
     if (weights_dir / "vgg_normalised.pth").exists() and (weights_dir / "decoder.pth").exists():
         return
-    script = Path(__file__).resolve().parent.parent / "models" / "download_models.sh"
-    subprocess.run(["bash", str(script)], check=True)
+
+    # Import the sibling download helper so we don't depend on bash/curl.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "download_models",
+        Path(__file__).resolve().parent.parent / "models" / "download_models.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.download_models(weights_dir)
 
 
 def main():
