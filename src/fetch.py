@@ -126,7 +126,7 @@ def fetch_artic() -> Artwork:
             page = random.randint(1, 5000)
             resp = _get(
                 f"https://api.artic.edu/api/v1/artworks"
-                f"?fields=id,title,artist_title,date_display,image_id"
+                f"?fields=id,title,artist_title,date_display,image_id,artwork_type_title"
                 f"&is_public_domain=true&limit=1&page={page}",
                 timeout=15,
             ).json()
@@ -137,15 +137,25 @@ def fetch_artic() -> Artwork:
 
             item = data[0]
             title = item.get("title", "Unknown")
+            artwork_type = item.get("artwork_type_title", "")
+
             if not is_safe_title(title):
                 print(f"Skipping NSFW: {title}", file=sys.stderr)
                 continue
             if not is_preferred_subject(title):
-                print(f"Skipping figurative: {title}", file=sys.stderr)
+                print(f"Skipping figurative: {title} [{artwork_type}]", file=sys.stderr)
+                continue
+
+            # Prefer paintings, prints, drawings, photographs — skip sculptures, textiles, etc.
+            good_types = {"Painting", "Print", "Drawing and Watercolor", "Photograph",
+                          "Woodblock Print", "Lithograph", "Etching"}
+            if artwork_type and artwork_type not in good_types:
+                print(f"Skipping type '{artwork_type}': {title}", file=sys.stderr)
                 continue
 
             image_id = item["image_id"]
-            iiif_url = f"https://www.artic.edu/iiif/2/{image_id}/full/1920,/0/default.jpg"
+            # Request max 3000px wide — AIC IIIF caps at source resolution
+            iiif_url = f"https://www.artic.edu/iiif/2/{image_id}/full/3000,/0/default.jpg"
             img_resp = _get(iiif_url, timeout=60)
 
             return Artwork(

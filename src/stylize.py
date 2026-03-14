@@ -122,7 +122,7 @@ class StyleTransfer:
         content: Image.Image,
         style: Image.Image,
         alpha: float = 0.8,
-        max_size: int = 768,
+        max_size: int = 1920,
     ) -> Image.Image:
         """Apply style transfer. Returns stylized PIL Image at original content size."""
         orig_w, orig_h = content.size
