@@ -343,7 +343,7 @@ The training script should depend only on existing project dependencies (`torch`
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
 | **Overfitting** on small curated dataset | Medium | Decoder memorizes training pairs; quality degrades on unseen content | Use validation set; early stopping; weight decay; fall back to Strategy 2 |
-| **Catastrophic forgetting** — loses ability to handle styles outside the curated set | Low | Fine-tuned decoder fails on new styles if palette expands | Use low learning rate; mix curated + generic pairs; keep original weights as fallback |
+| **Catastrophic forgetting** — loses ability to handle styles outside the curated set | Low | Fine-tuned decoder fails on new styles if palette expands | Use low learning rate; if palette expands beyond the 10 curated styles, re-fine-tune with new pairs; keep original weights as fallback |
 | **Marginal improvement** — fine-tuning doesn't noticeably improve quality | Medium | Effort spent without visible benefit | Start with artifact-focused TV loss, which has a clear measurable target; set quantitative success criteria before training |
 | **Dataset bias** — curated pairs over-represent certain content types | Low | Decoder performs well on landscapes but poorly on other subjects | Ensure content diversity in curation phase; include architecture, portraits, still life |
 | **Weight file compatibility** — fine-tuned weights don't load correctly | Very low | Runtime error in production | Validate by running the full pipeline end-to-end before publishing |
