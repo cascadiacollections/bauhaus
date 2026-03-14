@@ -4,17 +4,14 @@ Applies color harmonization, sharpening, and optional super-resolution
 to improve quality after AdaIN style transfer.
 """
 
+from itertools import accumulate
+
 from PIL import Image, ImageFilter
 
 
 def _cumulative_sum(hist: list[int]) -> list[int]:
     """Compute cumulative sum of a histogram."""
-    cdf: list[int] = []
-    running = 0
-    for val in hist:
-        running += val
-        cdf.append(running)
-    return cdf
+    return list(accumulate(hist))
 
 
 def _build_histogram_lut(source_hist: list[int], reference_hist: list[int]) -> list[int]:

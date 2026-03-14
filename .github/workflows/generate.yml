@@ -33,7 +33,7 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models
-        run: bash models/download_models.sh
+        run: python models/download_models.py
 
       - name: Generate and upload
         run: uv run python src/main.py --source unsplash

@@ -7,8 +7,8 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
-COPY models/download_models.sh models/
-RUN bash models/download_models.sh
+COPY models/download_models.py models/
+RUN python models/download_models.py
 
 COPY styles/ styles/
 COPY src/ src/

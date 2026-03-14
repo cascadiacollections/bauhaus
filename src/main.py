@@ -4,8 +4,8 @@ import argparse
 import json
 import os
 import random
-import subprocess
 import sys
+from datetime import date
 from io import BytesIO
 from pathlib import Path
 
@@ -44,8 +44,7 @@ def load_styles_manifest() -> list[dict]:
     manifest = STYLES_DIR / "styles.json"
     if not manifest.exists():
         return []
-    with open(manifest) as f:
-        return json.load(f)
+    return json.loads(manifest.read_text())
 
 
 def pick_style(mode: str) -> tuple[Image.Image, dict]:
@@ -67,7 +66,6 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
     if not styles:
         raise RuntimeError("No styles found in styles.json and STYLE_MODE=curated")
 
-    from datetime import date
     idx = date.today().timetuple().tm_yday % len(styles)
     style_info = styles[idx]
 
@@ -84,12 +82,14 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
 
 
 def ensure_models():
-    """Download model weights if not present."""
+    """Download model weights if not present (cross-platform)."""
     weights_dir = Path(__file__).resolve().parent.parent / "models" / "weights"
     if (weights_dir / "vgg_normalised.pth").exists() and (weights_dir / "decoder.pth").exists():
         return
-    script = Path(__file__).resolve().parent.parent / "models" / "download_models.sh"
-    subprocess.run(["bash", str(script)], check=True)
+
+    import subprocess
+    script = Path(__file__).resolve().parent.parent / "models" / "download_models.py"
+    subprocess.run([sys.executable, str(script)], check=True)
 
 
 def main():
@@ -224,12 +224,9 @@ def main():
         stylized_path = OUTPUT_DIR / "stylized.jpg"
         metadata_path = OUTPUT_DIR / "metadata.json"
 
-        with open(original_path, "wb") as f:
-            f.write(original_bytes)
-        with open(stylized_path, "wb") as f:
-            f.write(stylized_bytes)
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f, indent=2)
+        original_path.write_bytes(original_bytes)
+        stylized_path.write_bytes(stylized_bytes)
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
         print(f"\nDry run complete:")
         print(f"  Original:  {original_path}")

@@ -5,8 +5,6 @@ Paper: "Arbitrary Style Transfer in Real-time with Adaptive Instance Normalizati
        Xun Huang, Serge Belongie (ICCV 2017)
 """
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import torch

@@ -52,7 +52,7 @@ SKIP_SUBJECT_PATTERN = re.compile(
 MAX_ATTEMPTS = 10
 
 
-@dataclass
+@dataclass(slots=True)
 class Artwork:
     title: str
     artist: str
@@ -65,8 +65,7 @@ class Artwork:
     photographer_url: str = ""
 
     def to_metadata(self) -> dict:
-        d = asdict(self)
-        del d["image_bytes"]
+        d = {k: v for k, v in asdict(self).items() if k != "image_bytes"}
         if self.source in ("met", "artic"):
             d["license"] = "CC0-1.0"
             d["license_url"] = "https://creativecommons.org/publicdomain/zero/1.0/"
@@ -82,9 +81,7 @@ def is_safe_title(title: str) -> bool:
 
 def is_preferred_subject(title: str) -> bool:
     """Return True if the title suggests a landscape/seascape (not a portrait or small object)."""
-    if SKIP_SUBJECT_PATTERN.search(title):
-        return False
-    return True
+    return not SKIP_SUBJECT_PATTERN.search(title)
 
 
 def is_landscape(title: str) -> bool:
