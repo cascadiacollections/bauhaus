@@ -85,7 +85,7 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 ## Local development
 
-Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, and [just](https://github.com/casey/just)).
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
 
 ```bash
 # Install dependencies
@@ -122,9 +122,10 @@ just docker-run
 ### Worker
 
 ```bash
-just setup-all       # install Python + Worker deps
-just worker-dev      # start local dev server
-just worker-check    # typecheck
+mise install          # provision Python, Node, uv, just
+just setup-all        # install project deps (uv sync + npm ci)
+just worker-dev       # start local dev server
+just worker-check     # typecheck
 ```
 
 ## Configuration
