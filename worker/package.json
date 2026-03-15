@@ -5,9 +5,12 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
+  "overrides": {
+    "undici": ">=7.24.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250312.0",
     "typescript": "^5.7.0",
-    "wrangler": "^4.0.0"
+    "wrangler": "^4.73.0"
   }
 }
