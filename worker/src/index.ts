@@ -37,7 +37,7 @@ function imageResponse(obj: R2ObjectBody): Response {
   return new Response(obj.body, {
     headers: {
       "Content-Type": obj.httpMetadata?.contentType ?? "image/jpeg",
-      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=3600",
+      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
       ...corsHeaders(),
     },
   });
@@ -47,7 +47,7 @@ function jsonResponse(obj: R2ObjectBody): Response {
   return new Response(obj.body, {
     headers: {
       "Content-Type": "application/json",
-      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=300",
+      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
       ...corsHeaders(),
     },
   });
