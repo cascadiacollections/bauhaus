@@ -8,6 +8,7 @@ on:
       - 'LICENSE'
       - '.gitignore'
       - '.mise.toml'
+      - 'justfile'
       - 'styles/**'
   workflow_dispatch:
 

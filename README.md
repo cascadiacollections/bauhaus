@@ -85,40 +85,47 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 ## Local development
 
-Requires [uv](https://github.com/astral-sh/uv) and Python 3.14+.
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
 
 ```bash
 # Install dependencies
-uv sync
+just setup
 
 # Download AdaIN model weights (~94 MB)
-bash models/download_models.sh
+just download-models
+
+# Run tests
+just test
 
 # Generate locally (no R2 upload)
-uv run python src/main.py --dry-run
+just generate
 
-# Options
-uv run python src/main.py --dry-run --source unsplash  # Unsplash landscape (default)
-uv run python src/main.py --dry-run --source met      # Metropolitan Museum
-uv run python src/main.py --dry-run --source artic    # Art Institute of Chicago
-uv run python src/main.py --dry-run --alpha 0.5       # subtle style (0.0-1.0)
-uv run python src/main.py --dry-run --any-subject     # disable landscape filter
-uv run python src/main.py --dry-run --max-size 1536   # higher processing resolution
+# Options (extra args forwarded to src/main.py)
+just generate --source unsplash   # Unsplash landscape (default)
+just generate --source met        # Metropolitan Museum
+just generate --source artic      # Art Institute of Chicago
+just generate --alpha 0.5         # subtle style (0.0-1.0)
+just generate --any-subject       # disable landscape filter
+just generate --max-size 1536     # higher processing resolution
+
+# List all available recipes
+just
 ```
 
 ### Docker
 
 ```bash
-docker build -t bauhaus .
-docker run --rm -v ./output:/app/output bauhaus --dry-run
+just docker-build
+just docker-run
 ```
 
 ### Worker
 
 ```bash
-cd worker
-npm ci
-npx wrangler dev
+mise install          # provision Python, Node, uv, just
+just setup-all        # install project deps (uv sync + npm ci)
+just worker-dev       # start local dev server
+just worker-check     # typecheck
 ```
 
 ## Configuration
