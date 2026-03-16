@@ -102,6 +102,7 @@ class TestExtractExif:
         img_bytes = _make_test_image_bytes()
         result = extract_exif(img_bytes)
         assert isinstance(result, dict)
+        assert len(result) == 0
 
     def test_extract_from_image_with_exif(self):
         """JPEG with embedded EXIF should have tags extracted."""

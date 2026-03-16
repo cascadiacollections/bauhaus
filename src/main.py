@@ -26,9 +26,6 @@ _EXIF_IMAGE_DESCRIPTION = 0x010E
 _EXIF_ARTIST = 0x013B
 _EXIF_COPYRIGHT = 0x8298
 
-# Reverse map: tag id → human-readable name
-_TAG_NAMES = {v: k for k, v in EXIF_TAGS.items()}
-
 
 def extract_exif(image_bytes: bytes) -> dict:
     """Extract EXIF metadata from image bytes into a plain dict.
