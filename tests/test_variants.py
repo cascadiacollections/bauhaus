@@ -40,7 +40,7 @@ class TestGenerateVariants:
         jpeg_size = len(buf.getvalue())
 
         variants = generate_variants(img)
-        assert len(variants["webp"]) < jpeg_size or len(variants["webp"]) > 0
+        assert len(variants["webp"]) < jpeg_size
 
     def test_empty_dict_on_error(self, monkeypatch):
         """If both formats fail, returns whatever succeeded."""

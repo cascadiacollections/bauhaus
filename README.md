@@ -146,7 +146,7 @@ just worker-check     # typecheck
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
-| `GENERATE_VARIANTS` | `true` (default) generate AVIF and WebP variants alongside JPEG, `false` to skip |
+| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`) |
 | `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
 
 ## Style references
