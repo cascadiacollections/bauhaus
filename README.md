@@ -55,10 +55,11 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT)
   1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
-  4. Upload original + stylized + metadata to Cloudflare R2
+  4. Generate AVIF + WebP variants for smaller files and faster loads
+  5. Upload original + stylized (JPEG/AVIF/WebP) + metadata to Cloudflare R2
          |
   CF Worker API <-- R2 bucket
-    GET /api/today      -> stylized image
+    GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
     GET /api/today.json -> metadata
     GET /api/:date      -> archive
 ```
@@ -77,11 +78,17 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/today` | Today's stylized image |
+| `GET /api/today` | Today's stylized image (content-negotiated: AVIF → WebP → JPEG) |
+| `GET /api/today.avif` | Today's stylized image (AVIF, JPEG fallback) |
+| `GET /api/today.webp` | Today's stylized image (WebP, JPEG fallback) |
 | `GET /api/today.json` | Today's metadata (title, artist, source, license) |
-| `GET /api/YYYY-MM-DD` | Stylized image for a specific date |
+| `GET /api/YYYY-MM-DD` | Stylized image for a specific date (content-negotiated) |
+| `GET /api/YYYY-MM-DD.avif` | Stylized image (AVIF) for a specific date |
+| `GET /api/YYYY-MM-DD.webp` | Stylized image (WebP) for a specific date |
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
+
+The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Explicit `.avif` and `.webp` extensions are also supported.
 
 ## Local development
 
@@ -139,6 +146,7 @@ just worker-check     # typecheck
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
+| `GENERATE_VARIANTS` | `true` (default) generate AVIF and WebP variants alongside JPEG, `false` to skip |
 | `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
 
 ## Style references

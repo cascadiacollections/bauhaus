@@ -16,6 +16,7 @@ from postprocess import postprocess
 from quality import score_image
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
+from variants import generate_variants
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
@@ -122,6 +123,9 @@ def main():
     parser.add_argument("--max-size", type=int,
                         default=int(os.environ.get("MAX_SIZE", "1920")),
                         help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
+    parser.add_argument("--variants", action=argparse.BooleanOptionalAction,
+                        default=os.environ.get("GENERATE_VARIANTS", "true").lower() != "false",
+                        help="Generate AVIF and WebP variants (default: on, env: GENERATE_VARIANTS)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
@@ -217,6 +221,14 @@ def main():
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
 
+    # 6. Generate AVIF + WebP variants
+    variants = {}
+    if args.variants:
+        print("Generating image variants...")
+        variants = generate_variants(stylized)
+        for fmt in variants:
+            print(f"  {fmt}: {len(variants[fmt]):,} bytes")
+
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -228,15 +240,21 @@ def main():
         stylized_path.write_bytes(stylized_bytes)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
+        for fmt, data in variants.items():
+            variant_path = OUTPUT_DIR / f"stylized.{fmt}"
+            variant_path.write_bytes(data)
+
         print(f"\nDry run complete:")
         print(f"  Original:  {original_path}")
         print(f"  Stylized:  {stylized_path}")
+        for fmt in variants:
+            print(f"  Stylized ({fmt}): {OUTPUT_DIR / f'stylized.{fmt}'}")
         print(f"  Metadata:  {metadata_path}")
         return
 
-    # 6. Upload to R2
+    # 7. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata)
+    keys = upload(original_bytes, stylized_bytes, metadata, variants=variants)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")

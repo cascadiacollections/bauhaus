@@ -8,7 +8,7 @@ from upload import upload
 
 
 class TestUpload:
-    def _run_upload(self, today: date | None = None):
+    def _run_upload(self, today: date | None = None, variants: dict[str, bytes] | None = None):
         today = today or date(2025, 7, 14)
         mock_client = MagicMock()
 
@@ -19,6 +19,7 @@ class TestUpload:
                 metadata={"title": "Test Art", "artist": "Test Artist"},
                 bucket="test-bucket",
                 today=today,
+                variants=variants,
             )
         return keys, mock_client
 
@@ -54,3 +55,41 @@ class TestUpload:
         latest_call = calls[3]
         body = json.loads(latest_call.kwargs["Body"])
         assert body == {"date": "2025-07-14"}
+
+    # --- Variant upload tests ---
+
+    def test_variant_keys_uploaded(self):
+        variants = {"avif": b"avif-data", "webp": b"webp-data"}
+        keys, _ = self._run_upload(date(2025, 7, 14), variants=variants)
+        assert keys["stylized_avif"] == "stylized/2025/07/14.avif"
+        assert keys["stylized_webp"] == "stylized/2025/07/14.webp"
+
+    def test_variant_put_object_count(self):
+        variants = {"avif": b"avif-data", "webp": b"webp-data"}
+        _, mock_client = self._run_upload(variants=variants)
+        # 4 base calls + 2 variant calls = 6
+        assert mock_client.put_object.call_count == 6
+
+    def test_variant_content_types(self):
+        variants = {"avif": b"avif-data", "webp": b"webp-data"}
+        _, mock_client = self._run_upload(variants=variants)
+        calls = mock_client.put_object.call_args_list
+        # Variants are uploaded after stylized JPEG (index 1) and before metadata (index 4+)
+        variant_calls = {c.kwargs["Key"]: c.kwargs["ContentType"] for c in calls if ".avif" in c.kwargs.get("Key", "") or ".webp" in c.kwargs.get("Key", "")}
+        assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
+        assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
+
+    def test_no_variants_no_extra_calls(self):
+        _, mock_client = self._run_upload(variants=None)
+        assert mock_client.put_object.call_count == 4
+
+    def test_empty_variants_no_extra_calls(self):
+        _, mock_client = self._run_upload(variants={})
+        assert mock_client.put_object.call_count == 4
+
+    def test_single_variant_webp_only(self):
+        variants = {"webp": b"webp-data"}
+        keys, mock_client = self._run_upload(variants=variants)
+        assert "stylized_webp" in keys
+        assert "stylized_avif" not in keys
+        assert mock_client.put_object.call_count == 5

@@ -18,14 +18,21 @@ def _get_client():
     )
 
 
+_VARIANT_CONTENT_TYPES: dict[str, str] = {
+    "avif": "image/avif",
+    "webp": "image/webp",
+}
+
+
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
     metadata: dict,
     bucket: str | None = None,
     today: date | None = None,
+    variants: dict[str, bytes] | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, variants, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -54,6 +61,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["stylized"] = key
+
+    # Stylized image variants (AVIF, WebP)
+    for ext, data in (variants or {}).items():
+        key = f"stylized/{date_path}.{ext}"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=data,
+            ContentType=_VARIANT_CONTENT_TYPES.get(ext, f"image/{ext}"),
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys[f"stylized_{ext}"] = key
 
     # Metadata JSON
     metadata["date"] = today.isoformat()
