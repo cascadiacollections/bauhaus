@@ -65,6 +65,7 @@ def build_manifest(
     ow, oh = original_img.size
 
     g = gcd(sw, sh)
+    # aspect_ratio reflects the stylized (primary) variant dimensions
     aspect_ratio = f"{sw // g}:{sh // g}"
 
     variants = [
