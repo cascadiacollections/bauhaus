@@ -18,6 +18,7 @@ interface Env {
   BUCKET: R2Bucket;
 }
 
+/** Supported image formats in negotiation priority order: AVIF > WebP > JPEG. */
 type ImageFormat = "avif" | "webp" | "jpeg";
 
 const FORMAT_EXT: Record<ImageFormat, string> = {
