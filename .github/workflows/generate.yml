@@ -47,23 +47,27 @@ jobs:
           LANDSCAPES_ONLY: 'true'
 
       - name: Notify success
-        if: success() && secrets.NTFY_TOPIC != ''
+        if: success() && env.NTFY_TOPIC != ''
         run: |
-          curl -sf \
+          curl -f \
             -H "Title: Daily art generation succeeded" \
             -H "Priority: default" \
             -H "Tags: white_check_mark" \
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Generate workflow completed successfully." \
-            "https://ntfy.sh/${{ secrets.NTFY_TOPIC }}"
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Notify failure
-        if: failure() && secrets.NTFY_TOPIC != ''
+        if: failure() && env.NTFY_TOPIC != ''
         run: |
-          curl -sf \
+          curl -f \
             -H "Title: Daily art generation failed" \
             -H "Priority: high" \
             -H "Tags: x" \
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Generate workflow failed. Check the run logs for details." \
-            "https://ntfy.sh/${{ secrets.NTFY_TOPIC }}"
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
