@@ -55,3 +55,25 @@ jobs:
             exit 1
           fi
           echo "::notice::Deploy successful - API returning valid license: $STATUS"
+
+      - name: Notify success
+        if: success() && secrets.NTFY_TOPIC != ''
+        run: |
+          curl -sf \
+            -H "Title: Worker deployment succeeded" \
+            -H "Priority: default" \
+            -H "Tags: white_check_mark" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "Deploy workflow completed successfully." \
+            "https://ntfy.sh/${{ secrets.NTFY_TOPIC }}"
+
+      - name: Notify failure
+        if: failure() && secrets.NTFY_TOPIC != ''
+        run: |
+          curl -sf \
+            -H "Title: Worker deployment failed" \
+            -H "Priority: high" \
+            -H "Tags: x" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "Deploy workflow failed. Check the run logs for details." \
+            "https://ntfy.sh/${{ secrets.NTFY_TOPIC }}"
