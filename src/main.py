@@ -40,6 +40,44 @@ def embed_exif(image: Image.Image, metadata: dict) -> bytes:
     return buf.getvalue()
 
 
+def build_license_details(metadata: dict) -> dict:
+    """Build a structured license object from flat metadata fields."""
+    return {
+        "type": metadata.get("license", ""),
+        "url": metadata.get("license_url", ""),
+        "source": metadata.get("source", ""),
+        "source_url": metadata.get("source_url", ""),
+    }
+
+
+def build_variants(
+    stylized_img: Image.Image,
+    stylized_bytes: bytes,
+    original_img: Image.Image,
+    original_bytes: bytes,
+    today_str: str,
+) -> list[dict]:
+    """Build a variants array describing available image formats and sizes."""
+    return [
+        {
+            "type": "stylized",
+            "format": "image/jpeg",
+            "width": stylized_img.width,
+            "height": stylized_img.height,
+            "url": f"/api/{today_str}",
+            "size_bytes": len(stylized_bytes),
+        },
+        {
+            "type": "original",
+            "format": "image/jpeg",
+            "width": original_img.width,
+            "height": original_img.height,
+            "url": f"/api/{today_str}/original",
+            "size_bytes": len(original_bytes),
+        },
+    ]
+
+
 def load_styles_manifest() -> list[dict]:
     manifest = STYLES_DIR / "styles.json"
     if not manifest.exists():
@@ -216,6 +254,15 @@ def main():
     stylized_bytes = embed_exif(stylized, metadata)
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
+
+    # Add structured license details and variant descriptors
+    metadata["license_details"] = build_license_details(metadata)
+    today_str = date.today().isoformat()
+    metadata["variants"] = build_variants(
+        stylized, stylized_bytes,
+        original_img, original_bytes,
+        today_str,
+    )
 
     if args.dry_run:
         # Save locally
