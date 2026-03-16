@@ -26,8 +26,14 @@ _EXIF_ARTIST = 0x013B
 _EXIF_COPYRIGHT = 0x8298
 
 
-def embed_exif(image: Image.Image, metadata: dict) -> bytes:
-    """Encode image as JPEG with EXIF metadata (title, artist, copyright)."""
+def embed_exif(image: Image.Image, metadata: dict, progressive: bool = False) -> bytes:
+    """Encode image as JPEG with EXIF metadata (title, artist, copyright).
+
+    Args:
+        image: PIL Image to encode.
+        metadata: Dict with title, artist/photographer, license info.
+        progressive: If True, encode as progressive JPEG for faster perceived load.
+    """
     exif = image.getexif()
     exif[_EXIF_IMAGE_DESCRIPTION] = metadata.get("title", "")
     artist = metadata.get("photographer") or metadata.get("artist", "")
@@ -36,7 +42,7 @@ def embed_exif(image: Image.Image, metadata: dict) -> bytes:
     license_url = metadata.get("license_url", "")
     exif[_EXIF_COPYRIGHT] = f"{license_name} — {license_url}" if license_url else license_name
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95, exif=exif.tobytes())
+    image.save(buf, format="JPEG", quality=95, progressive=progressive, exif=exif.tobytes())
     return buf.getvalue()
 
 
@@ -217,26 +223,41 @@ def main():
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
 
+    # Generate progressive JPEG variants for faster perceived load
+    print("Generating progressive JPEG variants...")
+    stylized_progressive_bytes = embed_exif(stylized, metadata, progressive=True)
+    original_progressive_bytes = embed_exif(original_img, metadata, progressive=True)
+
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         original_path = OUTPUT_DIR / "original.jpg"
         stylized_path = OUTPUT_DIR / "stylized.jpg"
+        original_progressive_path = OUTPUT_DIR / "original.progressive.jpg"
+        stylized_progressive_path = OUTPUT_DIR / "stylized.progressive.jpg"
         metadata_path = OUTPUT_DIR / "metadata.json"
 
         original_path.write_bytes(original_bytes)
         stylized_path.write_bytes(stylized_bytes)
+        original_progressive_path.write_bytes(original_progressive_bytes)
+        stylized_progressive_path.write_bytes(stylized_progressive_bytes)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
         print(f"\nDry run complete:")
-        print(f"  Original:  {original_path}")
-        print(f"  Stylized:  {stylized_path}")
-        print(f"  Metadata:  {metadata_path}")
+        print(f"  Original:             {original_path}")
+        print(f"  Stylized:             {stylized_path}")
+        print(f"  Original progressive: {original_progressive_path}")
+        print(f"  Stylized progressive: {stylized_progressive_path}")
+        print(f"  Metadata:             {metadata_path}")
         return
 
     # 6. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata)
+    keys = upload(
+        original_bytes, stylized_bytes, metadata,
+        original_progressive_bytes=original_progressive_bytes,
+        stylized_progressive_bytes=stylized_progressive_bytes,
+    )
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")

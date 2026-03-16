@@ -7,6 +7,9 @@
  *   GET /api/:date       → stylized image for YYYY-MM-DD
  *   GET /api/:date/original → original unstylized image
  *   GET /api/:date.json  → metadata for date
+ *
+ * Query parameters:
+ *   ?progressive=true    → serve progressive JPEG variant (falls back to baseline)
  */
 
 interface Env {
@@ -24,6 +27,10 @@ async function getToday(bucket: R2Bucket): Promise<string> {
   if (!obj) throw new Error("No latest.json found");
   const data: { date: string } = await obj.json();
   return data.date;
+}
+
+function isProgressive(url: URL): boolean {
+  return url.searchParams.get("progressive") === "true";
 }
 
 function corsHeaders(): HeadersInit {
@@ -60,10 +67,21 @@ function notFound(msg: string): Response {
   });
 }
 
+/** Fetch an image from R2, trying the progressive variant first when requested. */
+async function getImage(bucket: R2Bucket, baseKey: string, progressive: boolean): Promise<R2ObjectBody | null> {
+  if (progressive) {
+    const progressiveKey = baseKey.replace(/\.jpg$/, ".progressive.jpg");
+    const obj = await bucket.get(progressiveKey);
+    if (obj) return obj;
+  }
+  return bucket.get(baseKey);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const progressive = isProgressive(url);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
@@ -76,7 +94,7 @@ export default {
     // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const obj = await env.BUCKET.get(`stylized/${datePath(today)}.jpg`);
+      const obj = await getImage(env.BUCKET, `stylized/${datePath(today)}.jpg`, progressive);
       if (!obj) return notFound("No image for today");
       return imageResponse(obj);
     }
@@ -100,7 +118,7 @@ export default {
     // GET /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      const obj = await env.BUCKET.get(`originals/${datePath(origMatch[1])}.jpg`);
+      const obj = await getImage(env.BUCKET, `originals/${datePath(origMatch[1])}.jpg`, progressive);
       if (!obj) return notFound(`No original for ${origMatch[1]}`);
       return imageResponse(obj);
     }
@@ -108,7 +126,7 @@ export default {
     // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const obj = await env.BUCKET.get(`stylized/${datePath(dateMatch[1])}.jpg`);
+      const obj = await getImage(env.BUCKET, `stylized/${datePath(dateMatch[1])}.jpg`, progressive);
       if (!obj) return notFound(`No image for ${dateMatch[1]}`);
       return imageResponse(obj);
     }

@@ -24,8 +24,10 @@ def upload(
     metadata: dict,
     bucket: str | None = None,
     today: date | None = None,
+    original_progressive_bytes: bytes | None = None,
+    stylized_progressive_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, progressive variants, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -54,6 +56,30 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["stylized"] = key
+
+    # Progressive original variant
+    if original_progressive_bytes is not None:
+        key = f"originals/{date_path}.progressive.jpg"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=original_progressive_bytes,
+            ContentType="image/jpeg",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["original_progressive"] = key
+
+    # Progressive stylized variant
+    if stylized_progressive_bytes is not None:
+        key = f"stylized/{date_path}.progressive.jpg"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=stylized_progressive_bytes,
+            ContentType="image/jpeg",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["stylized_progressive"] = key
 
     # Metadata JSON
     metadata["date"] = today.isoformat()
