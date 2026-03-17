@@ -74,3 +74,60 @@ class TestUpload:
             date(2025, 12, 25), stripped_bytes=b"stripped-data",
         )
         assert keys["stripped"] == "stylized/2025/12/25.stripped.jpg"
+
+
+class TestUploadVariants:
+    """Tests for variant and manifest upload."""
+
+    def _run_upload(self, variants=None, manifest=None, today=None):
+        today = today or date(2025, 7, 14)
+        mock_client = MagicMock()
+        with patch("upload._get_client", return_value=mock_client):
+            keys = upload(
+                original_bytes=b"original-data",
+                stylized_bytes=b"stylized-data",
+                metadata={"title": "Test Art", "artist": "Test Artist"},
+                bucket="test-bucket",
+                today=today,
+                variants=variants,
+                manifest=manifest,
+            )
+        return keys, mock_client
+
+    def test_upload_with_variants(self):
+        variants = {"avif": b"avif-data", "webp": b"webp-data"}
+        keys, mock_client = self._run_upload(variants=variants)
+        # 4 base (original, stylized, metadata, latest) + 2 variants = 6
+        assert mock_client.put_object.call_count == 6
+        assert "stylized_avif" in keys
+        assert "stylized_webp" in keys
+
+    def test_variant_keys_use_date_path(self):
+        variants = {"avif": b"avif-data"}
+        keys, _ = self._run_upload(variants=variants, today=date(2025, 12, 25))
+        assert keys["stylized_avif"] == "stylized/2025/12/25.avif"
+
+    def test_variant_content_types(self):
+        variants = {"avif": b"a", "webp": b"w", "progressive.jpg": b"p", "stripped.jpg": b"s"}
+        _, mock_client = self._run_upload(variants=variants)
+        calls = mock_client.put_object.call_args_list
+        variant_calls = {c.kwargs["Key"]: c.kwargs["ContentType"] for c in calls
+                         if "stylized/" in c.kwargs.get("Key", "") and c.kwargs["Key"] != "stylized/2025/07/14.jpg"}
+        assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
+        assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
+        assert variant_calls["stylized/2025/07/14.progressive.jpg"] == "image/jpeg"
+        assert variant_calls["stylized/2025/07/14.stripped.jpg"] == "image/jpeg"
+
+    def test_upload_with_manifest(self):
+        manifest = {"date": "2025-07-14", "variants": []}
+        keys, mock_client = self._run_upload(manifest=manifest)
+        # 4 base + 1 manifest = 5
+        assert mock_client.put_object.call_count == 5
+        assert keys["manifest"] == "manifests/2025/07/14.json"
+
+    def test_upload_without_variants_unchanged(self):
+        """Without variants/manifest, upload behaviour matches the original."""
+        keys, mock_client = self._run_upload()
+        assert mock_client.put_object.call_count == 4
+        assert "stylized_avif" not in keys
+        assert "manifest" not in keys

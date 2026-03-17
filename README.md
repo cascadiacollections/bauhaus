@@ -78,10 +78,26 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | Endpoint | Returns |
 |----------|---------|
 | `GET /api/today` | Today's stylized image |
-| `GET /api/today.json` | Today's metadata (title, artist, source, license) |
+| `GET /api/today.json` | Today's metadata (title, artist, source, license, variants) |
+| `GET /api/today.manifest.json` | Variant manifest (srcset / responsive helper) |
 | `GET /api/YYYY-MM-DD` | Stylized image for a specific date |
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
+| `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
+
+### Image format negotiation
+
+Image endpoints (`/api/today`, `/api/YYYY-MM-DD`) support automatic format selection.
+The Worker inspects the `Accept` header and serves the best available pre-generated variant (AVIF → WebP → JPEG).
+If the preferred format is missing, it falls back to JPEG.
+
+| Query parameter | Values | Description |
+|-----------------|--------|-------------|
+| `format` | `auto` (default), `jpeg`, `avif`, `webp` | Explicit format override |
+| `progressive` | `true` | Serve progressive JPEG variant |
+| `strip` | `true` | Serve EXIF-stripped (privacy-safe) variant |
+
+All image responses include a `Vary: Accept` header for correct caching.
 
 ## Local development
 
@@ -140,6 +156,7 @@ just worker-check     # typecheck
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 | `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
+| `GENERATE_VARIANTS` | `true` (default) generate AVIF, WebP, progressive, and stripped variants alongside JPEG; `false` to disable |
 
 ## Style references
 

@@ -24,9 +24,14 @@ def upload(
     metadata: dict,
     bucket: str | None = None,
     today: date | None = None,
+    variants: dict[str, bytes] | None = None,
+    manifest: dict | None = None,
     stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, variants, manifest, and metadata to R2.
+
+    Returns dict of uploaded keys.
+    """
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -56,6 +61,25 @@ def upload(
     )
     keys["stylized"] = key
 
+    # Image variants (AVIF, WebP, progressive, stripped)
+    _VARIANT_CONTENT_TYPES = {
+        "avif": "image/avif",
+        "webp": "image/webp",
+        "progressive.jpg": "image/jpeg",
+        "stripped.jpg": "image/jpeg",
+    }
+    if variants:
+        for suffix, data in variants.items():
+            key = f"stylized/{date_path}.{suffix}"
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=data,
+                ContentType=_VARIANT_CONTENT_TYPES.get(suffix, "application/octet-stream"),
+                CacheControl="public, max-age=31536000, immutable",
+            )
+            keys[f"stylized_{suffix.replace('.', '_')}"] = key
+
     # Metadata JSON
     metadata["date"] = today.isoformat()
     metadata["generated_at"] = datetime.now(UTC).isoformat()
@@ -68,6 +92,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["metadata"] = key
+
+    # Manifest JSON
+    if manifest:
+        key = f"manifests/{date_path}.json"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(manifest, indent=2).encode(),
+            ContentType="application/json",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["manifest"] = key
 
     # Stripped variant (no EXIF)
     if stripped_bytes is not None:
