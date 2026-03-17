@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day)
 
+permissions:
+  contents: read
+
 jobs:
   generate:
     # Requires a self-hosted runner registered with these labels.
