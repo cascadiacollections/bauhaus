@@ -25,6 +25,7 @@ check:
     cd src && uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
 
 # Generate locally (no R2 upload)
+# On Apple Silicon, PyTorch MPS acceleration is used automatically.
 generate *ARGS:
     uv run python src/main.py --dry-run {{ ARGS }}
 

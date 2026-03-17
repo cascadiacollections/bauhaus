@@ -15,6 +15,13 @@ from PIL import Image
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models" / "weights"
 
+
+def _select_device() -> torch.device:
+    """Pick the best available compute device: MPS (Apple Silicon) → CPU."""
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
 # Full VGG-19 architecture (normalized version from pytorch-AdaIN).
 # The weights file contains all layers; we load them all then truncate to relu4_1.
 _VGG_FULL = [
@@ -57,24 +64,26 @@ DECODER_LAYERS = [
 ]
 
 
-def _build_encoder(models_dir: Path) -> nn.Sequential:
+def _build_encoder(models_dir: Path, device: torch.device | None = None) -> nn.Sequential:
     # Load full VGG weights, then truncate to first 31 layers (up to relu4_1)
+    dev = device or _select_device()
     full_vgg = nn.Sequential(*_VGG_FULL)
     full_vgg.load_state_dict(torch.load(
         models_dir / "vgg_normalised.pth", map_location="cpu", weights_only=True,
     ))
     encoder = nn.Sequential(*list(full_vgg.children())[:31])
     encoder.eval()
-    return encoder
+    return encoder.to(dev)
 
 
-def _build_decoder(models_dir: Path) -> nn.Sequential:
+def _build_decoder(models_dir: Path, device: torch.device | None = None) -> nn.Sequential:
+    dev = device or _select_device()
     decoder = nn.Sequential(*DECODER_LAYERS)
     decoder.load_state_dict(torch.load(
         models_dir / "decoder.pth", map_location="cpu", weights_only=True,
     ))
     decoder.eval()
-    return decoder
+    return decoder.to(dev)
 
 
 def _calc_mean_std(feat: torch.Tensor, eps: float = 1e-5):
@@ -160,10 +169,11 @@ def luminance_alpha_mask(
 class StyleTransfer:
     """AdaIN style transfer model."""
 
-    def __init__(self, models_dir: Path | None = None):
+    def __init__(self, models_dir: Path | None = None, device: torch.device | str | None = None):
         d = models_dir or MODELS_DIR
-        self.encoder = _build_encoder(d)
-        self.decoder = _build_decoder(d)
+        self.device = torch.device(device) if isinstance(device, str) else (device or _select_device())
+        self.encoder = _build_encoder(d, self.device)
+        self.decoder = _build_decoder(d, self.device)
 
     @torch.no_grad()
     def transfer(
@@ -193,8 +203,8 @@ class StyleTransfer:
             ``"luminance"``.  Ignored when *alpha_mask* is provided.
         """
         orig_w, orig_h = content.size
-        content_tensor = _load_image(content, max_size)
-        style_tensor = _load_image(style, max_size)
+        content_tensor = _load_image(content, max_size).to(self.device)
+        style_tensor = _load_image(style, max_size).to(self.device)
 
         content_feat = self.encoder(content_tensor)
         style_feat = self.encoder(style_tensor)
@@ -204,17 +214,17 @@ class StyleTransfer:
         if alpha_mask is not None:
             feat_h, feat_w = content_feat.shape[2:]
             mask = F.interpolate(
-                alpha_mask, size=(feat_h, feat_w), mode="bilinear", align_corners=False,
+                alpha_mask.to(self.device), size=(feat_h, feat_w), mode="bilinear", align_corners=False,
             )
             blended = mask * adain_feat + (1 - mask) * content_feat
         elif alpha_mode == "gradient":
             _, _, fh, fw = content_feat.shape
-            mask = gradient_alpha_mask(fh, fw, top_alpha=alpha, bottom_alpha=alpha * 0.5)
+            mask = gradient_alpha_mask(fh, fw, top_alpha=alpha, bottom_alpha=alpha * 0.5).to(self.device)
             blended = mask * adain_feat + (1 - mask) * content_feat
         elif alpha_mode == "luminance":
             mask = luminance_alpha_mask(
                 content_tensor, bright_alpha=alpha, dark_alpha=alpha * 0.5,
-            )
+            ).to(self.device)
             mask = F.interpolate(
                 mask, size=content_feat.shape[2:], mode="bilinear", align_corners=False,
             )
@@ -223,7 +233,7 @@ class StyleTransfer:
             blended = alpha * adain_feat + (1 - alpha) * content_feat
 
         output = self.decoder(blended)
-        output = output.clamp(0, 1).squeeze(0)
+        output = output.clamp(0, 1).squeeze(0).cpu()
 
         result = transforms.ToPILImage()(output)
         if result.size != (orig_w, orig_h):
