@@ -97,6 +97,104 @@ def embed_exif(image: Image.Image, metadata: dict, progressive: bool = False) ->
     return buf.getvalue()
 
 
+def generate_variants(
+    image: Image.Image,
+    exif_bytes: bytes | None = None,
+) -> dict[str, bytes]:
+    """Generate AVIF, WebP, progressive JPEG, and stripped (no-EXIF) variants.
+
+    Returns a dict mapping variant suffix (e.g. ``"avif"``, ``"webp"``,
+    ``"progressive.jpg"``, ``"stripped.jpg"``) to the encoded bytes.
+    AVIF is silently skipped when the codec is unavailable.
+    """
+    variants: dict[str, bytes] = {}
+
+    # AVIF
+    try:
+        buf = BytesIO()
+        kw: dict = {"format": "AVIF", "quality": 80}
+        if exif_bytes:
+            kw["exif"] = exif_bytes
+        image.save(buf, **kw)
+        variants["avif"] = buf.getvalue()
+    except Exception:
+        print("  ⚠ AVIF codec unavailable, skipping AVIF variant", file=sys.stderr)
+
+    # WebP
+    buf = BytesIO()
+    kw = {"format": "WEBP", "quality": 85, "method": 6}
+    if exif_bytes:
+        kw["exif"] = exif_bytes
+    image.save(buf, **kw)
+    variants["webp"] = buf.getvalue()
+
+    # Progressive JPEG (with EXIF)
+    buf = BytesIO()
+    kw = {"format": "JPEG", "quality": 95, "progressive": True}
+    if exif_bytes:
+        kw["exif"] = exif_bytes
+    image.save(buf, **kw)
+    variants["progressive.jpg"] = buf.getvalue()
+
+    # Stripped JPEG (no EXIF metadata)
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    variants["stripped.jpg"] = buf.getvalue()
+
+    return variants
+
+
+def build_manifest(
+    metadata: dict,
+    width: int,
+    height: int,
+    stylized_size: int,
+    variants: dict[str, bytes],
+    date_str: str,
+) -> dict:
+    """Build a manifest dict listing available image variants for srcset / responsive use."""
+    g = gcd(width, height) or 1
+    aspect = f"{width // g}:{height // g}"
+
+    items: list[dict] = [
+        {
+            "format": "jpeg",
+            "width": width,
+            "height": height,
+            "url": f"/api/{date_str}",
+            "size_bytes": stylized_size,
+        },
+    ]
+
+    _FMT = {
+        "avif": ("avif", f"/api/{date_str}?format=avif"),
+        "webp": ("webp", f"/api/{date_str}?format=webp"),
+        "progressive.jpg": ("progressive-jpeg", f"/api/{date_str}?progressive=true"),
+        "stripped.jpg": ("stripped-jpeg", f"/api/{date_str}?strip=true"),
+    }
+    for suffix, (fmt, url) in _FMT.items():
+        if suffix in variants:
+            items.append({
+                "format": fmt,
+                "width": width,
+                "height": height,
+                "url": url,
+                "size_bytes": len(variants[suffix]),
+            })
+
+    return {
+        "date": date_str,
+        "variants": items,
+        "aspect_ratio": aspect,
+        "license": {
+            "type": metadata.get("license", ""),
+            "url": metadata.get("license_url", ""),
+        },
+        "source": metadata.get("source", ""),
+        "source_url": metadata.get("source_url", ""),
+    }
+
+
 def build_license_details(metadata: dict) -> dict:
     """Build a structured license object from flat metadata fields."""
     return {
@@ -392,57 +490,52 @@ def main():
         print("Generating EXIF-stripped variant...")
         stripped_bytes = strip_exif(stylized)
 
-    # Generate AVIF + WebP variants
-    variants = {}
-    if args.variants:
-        print("Generating image variants...")
-        variants = generate_variants(stylized)
-        for fmt in variants:
-            print(f"  {fmt}: {len(variants[fmt]):,} bytes")
+    # Generate all image variants (AVIF, WebP, progressive JPEG, stripped JPEG)
+    variants: dict[str, bytes] = {}
+    if os.environ.get("GENERATE_VARIANTS", "true").lower() != "false":
+        print("Generating image variants (AVIF, WebP, progressive, stripped)...")
+        exif_bytes: bytes | None = None
+        try:
+            exif_obj = stylized.getexif()
+            if exif_obj:
+                exif_bytes = exif_obj.tobytes()
+        except Exception:
+            pass
+        variants = generate_variants(stylized, exif_bytes=exif_bytes)
+        print(f"  Generated {len(variants)} variant(s): {', '.join(sorted(variants))}")
 
-    # Generate progressive JPEG variants for faster perceived load
-    print("Generating progressive JPEG variants...")
-    stylized_progressive_bytes = embed_exif(stylized, metadata, progressive=True)
-    original_progressive_bytes = embed_exif(original_img, metadata, progressive=True)
-
-    # Build manifest for responsive variants
-    manifest = build_manifest(stylized_bytes, original_bytes, metadata, today=today)
+    # Build manifest with aspect_ratio and all variants
+    w, h = stylized.size
+    manifest = build_manifest(metadata, w, h, len(stylized_bytes), variants, today_str)
 
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         original_path = OUTPUT_DIR / "original.jpg"
         stylized_path = OUTPUT_DIR / "stylized.jpg"
-        original_progressive_path = OUTPUT_DIR / "original.progressive.jpg"
-        stylized_progressive_path = OUTPUT_DIR / "stylized.progressive.jpg"
         metadata_path = OUTPUT_DIR / "metadata.json"
         manifest_path = OUTPUT_DIR / "manifest.json"
 
         original_path.write_bytes(original_bytes)
         stylized_path.write_bytes(stylized_bytes)
-        original_progressive_path.write_bytes(original_progressive_bytes)
-        stylized_progressive_path.write_bytes(stylized_progressive_bytes)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-        for fmt, data in variants.items():
-            variant_path = OUTPUT_DIR / f"stylized.{fmt}"
-            variant_path.write_bytes(data)
-
         print(f"\nDry run complete:")
-        print(f"  Original:             {original_path}")
-        print(f"  Stylized:             {stylized_path}")
-        for fmt in variants:
-            print(f"  Stylized ({fmt}):      {OUTPUT_DIR / f'stylized.{fmt}'}")
-        print(f"  Original progressive: {original_progressive_path}")
-        print(f"  Stylized progressive: {stylized_progressive_path}")
-        print(f"  Metadata:             {metadata_path}")
-        print(f"  Manifest:             {manifest_path}")
+        print(f"  Original:  {original_path}")
+        print(f"  Stylized:  {stylized_path}")
+        print(f"  Metadata:  {metadata_path}")
+        print(f"  Manifest:  {manifest_path}")
+
+        for suffix, data in sorted(variants.items()):
+            variant_path = OUTPUT_DIR / f"stylized.{suffix}"
+            variant_path.write_bytes(data)
+            print(f"  Variant:   {variant_path}")
 
         if stripped_bytes:
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
             stripped_path.write_bytes(stripped_bytes)
-            print(f"  Stripped:             {stripped_path}")
+            print(f"  Stripped:  {stripped_path}")
         return
 
     # 7. Upload to R2
@@ -452,8 +545,6 @@ def main():
         manifest=manifest,
         today=today,
         variants=variants,
-        original_progressive_bytes=original_progressive_bytes,
-        stylized_progressive_bytes=stylized_progressive_bytes,
         stripped_bytes=stripped_bytes,
     )
     print("Uploaded:")

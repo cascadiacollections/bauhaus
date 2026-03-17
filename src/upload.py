@@ -32,11 +32,9 @@ def upload(
     bucket: str | None = None,
     today: date | None = None,
     variants: dict[str, bytes] | None = None,
-    original_progressive_bytes: bytes | None = None,
-    stylized_progressive_bytes: bytes | None = None,
     stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, AVIF/WebP variants, progressive variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -66,41 +64,24 @@ def upload(
     )
     keys["stylized"] = key
 
-    # Stylized image variants (AVIF, WebP)
-    for ext, data in (variants or {}).items():
-        key = f"stylized/{date_path}.{ext}"
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=data,
-            ContentType=_VARIANT_CONTENT_TYPES.get(ext, f"image/{ext}"),
-            CacheControl="public, max-age=31536000, immutable",
-        )
-        keys[f"stylized_{ext}"] = key
-
-    # Progressive original variant
-    if original_progressive_bytes is not None:
-        key = f"originals/{date_path}.progressive.jpg"
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=original_progressive_bytes,
-            ContentType="image/jpeg",
-            CacheControl="public, max-age=31536000, immutable",
-        )
-        keys["original_progressive"] = key
-
-    # Progressive stylized variant
-    if stylized_progressive_bytes is not None:
-        key = f"stylized/{date_path}.progressive.jpg"
-        client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=stylized_progressive_bytes,
-            ContentType="image/jpeg",
-            CacheControl="public, max-age=31536000, immutable",
-        )
-        keys["stylized_progressive"] = key
+    # Image variants (AVIF, WebP, progressive, stripped)
+    _all_variant_types = {
+        "avif": "image/avif",
+        "webp": "image/webp",
+        "progressive.jpg": "image/jpeg",
+        "stripped.jpg": "image/jpeg",
+    }
+    if variants:
+        for suffix, data in variants.items():
+            key = f"stylized/{date_path}.{suffix}"
+            client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=data,
+                ContentType=_all_variant_types.get(suffix, _VARIANT_CONTENT_TYPES.get(suffix, f"image/{suffix.split('.')[-1]}")),
+                CacheControl="public, max-age=31536000, immutable",
+            )
+            keys[f"stylized_{suffix.replace('.', '_')}"] = key
 
     # Metadata JSON
     metadata["date"] = today.isoformat()

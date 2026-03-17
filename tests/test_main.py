@@ -16,6 +16,7 @@ from main import (
     build_variants,
     embed_exif,
     extract_exif,
+    generate_variants,
     load_styles_manifest,
     main,
     strip_exif,
@@ -201,6 +202,130 @@ class TestMaxSizeCLIArg:
                                 default=int(os.environ.get("MAX_SIZE", "1024")))
             args = parser.parse_args(["--max-size", "768"])
             assert args.max_size == 768
+
+
+# --- Variant generation ---
+
+
+class TestGenerateVariants:
+    def _img(self, w: int = 100, h: int = 80) -> Image.Image:
+        return Image.new("RGB", (w, h), "red")
+
+    def test_produces_webp(self):
+        variants = generate_variants(self._img())
+        assert "webp" in variants
+        assert len(variants["webp"]) > 0
+
+    def test_produces_progressive_jpeg(self):
+        variants = generate_variants(self._img())
+        assert "progressive.jpg" in variants
+        assert len(variants["progressive.jpg"]) > 0
+
+    def test_produces_stripped_jpeg(self):
+        variants = generate_variants(self._img())
+        assert "stripped.jpg" in variants
+        assert len(variants["stripped.jpg"]) > 0
+
+    def test_avif_skipped_gracefully_or_present(self):
+        """AVIF is optional — codec may or may not be available."""
+        variants = generate_variants(self._img())
+        assert isinstance(variants, dict)
+        # At minimum we always get webp, progressive, stripped
+        assert len(variants) >= 3
+
+    def test_with_exif_bytes(self):
+        img = self._img()
+        exif = img.getexif()
+        exif[0x010E] = "Test Description"
+        exif_bytes = exif.tobytes()
+        variants = generate_variants(img, exif_bytes=exif_bytes)
+        assert "webp" in variants
+        assert "progressive.jpg" in variants
+
+    def test_stripped_has_no_exif(self):
+        img = self._img()
+        exif = img.getexif()
+        exif[0x010E] = "Should Not Appear"
+        exif_bytes = exif.tobytes()
+        variants = generate_variants(img, exif_bytes=exif_bytes)
+        stripped = Image.open(BytesIO(variants["stripped.jpg"]))
+        stripped_exif = stripped.getexif()
+        assert 0x010E not in stripped_exif
+
+
+# --- Manifest building ---
+
+
+class TestBuildManifest:
+    def _metadata(self) -> dict:
+        return {
+            "license": "CC0-1.0",
+            "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "source": "met",
+            "source_url": "https://www.metmuseum.org/art/collection/search/1",
+        }
+
+    def _jpeg_bytes(self, w: int = 200, h: int = 100) -> bytes:
+        buf = BytesIO()
+        Image.new("RGB", (w, h), "red").save(buf, format="JPEG")
+        return buf.getvalue()
+
+    def test_manifest_structure(self):
+        stylized_bytes = self._jpeg_bytes(200, 100)
+        variants = {"webp": b"w" * 50, "progressive.jpg": b"p" * 60}
+        manifest = build_manifest(
+            self._metadata(), 200, 100, len(stylized_bytes), variants, "2025-07-14",
+        )
+        assert manifest["date"] == "2025-07-14"
+        assert manifest["aspect_ratio"] == "2:1"
+        assert manifest["license"]["type"] == "CC0-1.0"
+        assert manifest["source"] == "met"
+
+    def test_includes_jpeg_variant(self):
+        stylized_bytes = self._jpeg_bytes(100, 100)
+        manifest = build_manifest(
+            self._metadata(), 100, 100, len(stylized_bytes), {}, "2025-07-14",
+        )
+        formats = [v["format"] for v in manifest["variants"]]
+        assert "jpeg" in formats
+
+    def test_includes_all_variant_formats(self):
+        stylized_bytes = self._jpeg_bytes()
+        variants = {
+            "avif": b"a" * 40,
+            "webp": b"w" * 50,
+            "progressive.jpg": b"p" * 60,
+            "stripped.jpg": b"s" * 55,
+        }
+        manifest = build_manifest(
+            self._metadata(), 200, 100, len(stylized_bytes), variants, "2025-07-14",
+        )
+        formats = {v["format"] for v in manifest["variants"]}
+        assert formats == {"jpeg", "avif", "webp", "progressive-jpeg", "stripped-jpeg"}
+
+    def test_variant_urls(self):
+        stylized_bytes = self._jpeg_bytes()
+        variants = {"webp": b"w" * 50}
+        manifest = build_manifest(
+            self._metadata(), 200, 100, len(stylized_bytes), variants, "2025-07-14",
+        )
+        urls = {v["format"]: v["url"] for v in manifest["variants"]}
+        assert urls["jpeg"] == "/api/2025-07-14"
+        assert urls["webp"] == "/api/2025-07-14?format=webp"
+
+    def test_size_bytes(self):
+        stylized_bytes = self._jpeg_bytes()
+        variants = {"webp": b"w" * 50}
+        manifest = build_manifest(
+            self._metadata(), 200, 100, len(stylized_bytes), variants, "2025-07-14",
+        )
+        jpeg_entry = next(v for v in manifest["variants"] if v["format"] == "jpeg")
+        assert jpeg_entry["size_bytes"] == len(stylized_bytes)
+        webp_entry = next(v for v in manifest["variants"] if v["format"] == "webp")
+        assert webp_entry["size_bytes"] == 50
+
+
+# --- License details and variant descriptors ---
 
 
 class TestBuildLicenseDetails:
