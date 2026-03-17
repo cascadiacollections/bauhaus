@@ -90,6 +90,12 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Explicit `.avif` and `.webp` extensions are also supported.
 
+### Query parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
+
 ## Local development
 
 Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
