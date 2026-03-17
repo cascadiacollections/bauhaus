@@ -8,12 +8,45 @@
  *   GET /api/:date/original → original unstylized image
  *   GET /api/:date.json  → metadata for date
  *
+ * Format negotiation:
+ *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
+ *   Worker inspects Accept header to pick the best pre-generated variant
+ *   (AVIF > WebP > JPEG) and falls back to JPEG when a variant is missing.
+ *
  * Query parameters:
  *   ?progressive=true    → serve progressive JPEG variant (falls back to baseline)
  */
 
 interface Env {
   BUCKET: R2Bucket;
+}
+
+/** Supported image formats in negotiation priority order: AVIF > WebP > JPEG. */
+type ImageFormat = "avif" | "webp" | "jpeg";
+
+const FORMAT_EXT: Record<ImageFormat, string> = {
+  avif: ".avif",
+  webp: ".webp",
+  jpeg: ".jpg",
+};
+
+const FORMAT_CONTENT_TYPE: Record<ImageFormat, string> = {
+  avif: "image/avif",
+  webp: "image/webp",
+  jpeg: "image/jpeg",
+};
+
+export function negotiateFormat(request: Request, url: URL): ImageFormat {
+  const param = url.searchParams.get("format")?.toLowerCase();
+  if (param === "avif") return "avif";
+  if (param === "webp") return "webp";
+  if (param === "jpeg") return "jpeg";
+
+  // ?format=auto or absent → negotiate via Accept header
+  const accept = request.headers.get("Accept") ?? "";
+  if (accept.includes("image/avif")) return "avif";
+  if (accept.includes("image/webp")) return "webp";
+  return "jpeg";
 }
 
 function datePath(dateStr: string): string {
@@ -40,12 +73,39 @@ function corsHeaders(): HeadersInit {
   };
 }
 
-function imageResponse(obj: R2ObjectBody): Response {
-  const variant = obj.key && obj.key.endsWith(".progressive.jpg") ? "progressive" : "baseline";
+async function getImageObject(
+  bucket: R2Bucket,
+  basePath: string,
+  format: ImageFormat,
+  progressive: boolean = false,
+): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
+  // For JPEG with ?progressive=true, try the progressive variant first
+  if (format === "jpeg" && progressive) {
+    const obj = await bucket.get(`${basePath}.progressive.jpg`);
+    if (obj) return { obj, contentType: "image/jpeg" };
+  }
+
+  // Try the negotiated format
+  const key = `${basePath}${FORMAT_EXT[format]}`;
+  const obj = await bucket.get(key);
+  if (obj) return { obj, contentType: FORMAT_CONTENT_TYPE[format] };
+
+  // Fall back to JPEG if the requested format is unavailable
+  if (format !== "jpeg") {
+    const fallback = await bucket.get(`${basePath}.jpg`);
+    if (fallback) return { obj: fallback, contentType: "image/jpeg" };
+  }
+
+  return null;
+}
+
+function imageResponse(obj: R2ObjectBody, contentType: string): Response {
+  const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   return new Response(obj.body, {
     headers: {
-      "Content-Type": obj.httpMetadata?.contentType ?? "image/jpeg",
+      "Content-Type": contentType,
       "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
+      "Vary": "Accept",
       "X-Variant": variant,
       ...corsHeaders(),
     },
@@ -69,16 +129,6 @@ function notFound(msg: string): Response {
   });
 }
 
-/** Fetch an image from R2, trying the progressive variant first when requested. */
-async function getImage(bucket: R2Bucket, baseKey: string, progressive: boolean): Promise<R2ObjectBody | null> {
-  if (progressive) {
-    const progressiveKey = baseKey.replace(/\.jpg$/, ".progressive.jpg");
-    const obj = await bucket.get(progressiveKey);
-    if (obj) return obj;
-  }
-  return bucket.get(baseKey);
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -93,12 +143,14 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     }
 
+    const format = negotiateFormat(request, url);
+
     // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const obj = await getImage(env.BUCKET, `stylized/${datePath(today)}.jpg`, progressive);
-      if (!obj) return notFound("No image for today");
-      return imageResponse(obj);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, progressive);
+      if (!result) return notFound("No image for today");
+      return imageResponse(result.obj, result.contentType);
     }
 
     // GET /api/today.json → metadata
@@ -120,17 +172,17 @@ export default {
     // GET /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      const obj = await getImage(env.BUCKET, `originals/${datePath(origMatch[1])}.jpg`, progressive);
-      if (!obj) return notFound(`No original for ${origMatch[1]}`);
-      return imageResponse(obj);
+      const result = await getImageObject(env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive);
+      if (!result) return notFound(`No original for ${origMatch[1]}`);
+      return imageResponse(result.obj, result.contentType);
     }
 
     // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const obj = await getImage(env.BUCKET, `stylized/${datePath(dateMatch[1])}.jpg`, progressive);
-      if (!obj) return notFound(`No image for ${dateMatch[1]}`);
-      return imageResponse(obj);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive);
+      if (!result) return notFound(`No image for ${dateMatch[1]}`);
+      return imageResponse(result.obj, result.contentType);
     }
 
     return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");
