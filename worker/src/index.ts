@@ -2,11 +2,13 @@
  * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork from R2.
  *
  * Routes:
- *   GET /api/today       → today's stylized image
- *   GET /api/today.json  → today's metadata
- *   GET /api/:date       → stylized image for YYYY-MM-DD
- *   GET /api/:date/original → original unstylized image
- *   GET /api/:date.json  → metadata for date
+ *   GET /api/today               → today's stylized image
+ *   GET /api/today.json          → today's metadata
+ *   GET /api/today.manifest.json → today's responsive manifest
+ *   GET /api/:date               → stylized image for YYYY-MM-DD
+ *   GET /api/:date/original      → original unstylized image
+ *   GET /api/:date.json          → metadata for date
+ *   GET /api/:date.manifest.json → responsive manifest for date
  *
  * Format negotiation:
  *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
@@ -171,6 +173,22 @@ export default {
       const today = await getToday(env.BUCKET);
       const obj = await env.BUCKET.get(`metadata/${datePath(today)}.json`);
       if (!obj) return notFound("No metadata for today");
+      return jsonResponse(obj);
+    }
+
+    // GET /api/today.manifest.json → responsive manifest
+    if (path === "/api/today.manifest.json") {
+      const today = await getToday(env.BUCKET);
+      const obj = await env.BUCKET.get(`manifests/${datePath(today)}.json`);
+      if (!obj) return notFound("No manifest for today");
+      return jsonResponse(obj);
+    }
+
+    // GET /api/:date.manifest.json → responsive manifest for date
+    const manifestMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.manifest\.json$/);
+    if (manifestMatch) {
+      const obj = await env.BUCKET.get(`manifests/${datePath(manifestMatch[1])}.json`);
+      if (!obj) return notFound(`No manifest for ${manifestMatch[1]}`);
       return jsonResponse(obj);
     }
 

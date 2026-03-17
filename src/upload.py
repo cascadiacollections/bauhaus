@@ -22,13 +22,14 @@ def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
     metadata: dict,
+    manifest: dict | None = None,
     bucket: str | None = None,
     today: date | None = None,
     original_progressive_bytes: bytes | None = None,
     stylized_progressive_bytes: bytes | None = None,
     stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, progressive variants, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, progressive variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -94,6 +95,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["metadata"] = key
+
+    # Manifest JSON (responsive variants)
+    if manifest is not None:
+        key = f"manifests/{date_path}.json"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=json.dumps(manifest, indent=2).encode(),
+            ContentType="application/json",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["manifest"] = key
 
     # Stripped variant (no EXIF)
     if stripped_bytes is not None:
