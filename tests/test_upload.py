@@ -8,7 +8,7 @@ from upload import upload
 
 
 class TestUpload:
-    def _run_upload(self, today: date | None = None, manifest: dict | None = None):
+    def _run_upload(self, today: date | None = None, manifest: dict | None = None, stripped_bytes: bytes | None = None):
         today = today or date(2025, 7, 14)
         mock_client = MagicMock()
 
@@ -20,6 +20,7 @@ class TestUpload:
                 manifest=manifest,
                 bucket="test-bucket",
                 today=today,
+                stripped_bytes=stripped_bytes,
             )
         return keys, mock_client
 
@@ -55,6 +56,25 @@ class TestUpload:
         latest_call = calls[3]
         body = json.loads(latest_call.kwargs["Body"])
         assert body == {"date": "2025-07-14"}
+
+    def test_stripped_variant_not_uploaded_when_none(self):
+        keys, mock_client = self._run_upload()
+        assert "stripped" not in keys
+        assert mock_client.put_object.call_count == 4
+
+    def test_stripped_variant_uploaded_when_provided(self):
+        keys, mock_client = self._run_upload(
+            date(2025, 7, 14), stripped_bytes=b"stripped-data",
+        )
+        assert "stripped" in keys
+        assert keys["stripped"] == "stylized/2025/07/14.stripped.jpg"
+        assert mock_client.put_object.call_count == 5
+
+    def test_stripped_variant_key_formatting(self):
+        keys, _ = self._run_upload(
+            date(2025, 12, 25), stripped_bytes=b"stripped-data",
+        )
+        assert keys["stripped"] == "stylized/2025/12/25.stripped.jpg"
 
 
 class TestUploadWithManifest:

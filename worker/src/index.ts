@@ -14,6 +14,9 @@
  *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
  *   Worker inspects Accept header to pick the best pre-generated variant
  *   (AVIF > WebP > JPEG) and falls back to JPEG when a variant is missing.
+ *
+ * Query parameters:
+ *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
  */
 
 interface Env {
@@ -61,6 +64,10 @@ async function getToday(bucket: R2Bucket): Promise<string> {
   return data.date;
 }
 
+function isStrip(url: URL): boolean {
+  return url.searchParams.get("strip") === "true";
+}
+
 function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -72,8 +79,15 @@ async function getImageObject(
   bucket: R2Bucket,
   basePath: string,
   format: ImageFormat,
+  strip: boolean = false,
 ): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
-  // Try the negotiated format first
+  // For JPEG with ?strip=true, try the stripped variant first
+  if (strip) {
+    const stripped = await bucket.get(`${basePath}.stripped.jpg`);
+    if (stripped) return { obj: stripped, contentType: "image/jpeg" };
+  }
+
+  // Try the negotiated format
   const key = `${basePath}${FORMAT_EXT[format]}`;
   const obj = await bucket.get(key);
   if (obj) return { obj, contentType: FORMAT_CONTENT_TYPE[format] };
@@ -119,6 +133,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const strip = isStrip(url);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
@@ -133,7 +148,7 @@ export default {
     // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, strip);
       if (!result) return notFound("No image for today");
       return imageResponse(result.obj, result.contentType);
     }
@@ -181,7 +196,7 @@ export default {
     // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, strip);
       if (!result) return notFound(`No image for ${dateMatch[1]}`);
       return imageResponse(result.obj, result.contentType);
     }
