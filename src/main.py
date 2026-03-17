@@ -240,54 +240,6 @@ def load_styles_manifest() -> list[dict]:
     return json.loads(manifest.read_text())
 
 
-def build_manifest(
-    stylized_bytes: bytes,
-    original_bytes: bytes,
-    metadata: dict,
-    today: date | None = None,
-) -> dict:
-    """Build a manifest describing available image variants for srcset/responsive use."""
-    today = today or date.today()
-    date_str = today.isoformat()
-
-    stylized_img = Image.open(BytesIO(stylized_bytes))
-    original_img = Image.open(BytesIO(original_bytes))
-
-    sw, sh = stylized_img.size
-    ow, oh = original_img.size
-
-    g = gcd(sw, sh)
-    # aspect_ratio reflects the stylized (primary) variant dimensions
-    aspect_ratio = f"{sw // g}:{sh // g}"
-
-    variants = [
-        {
-            "width": sw,
-            "height": sh,
-            "format": "jpeg",
-            "url": f"/api/{date_str}",
-            "size_bytes": len(stylized_bytes),
-        },
-        {
-            "width": ow,
-            "height": oh,
-            "format": "jpeg",
-            "url": f"/api/{date_str}/original",
-            "size_bytes": len(original_bytes),
-        },
-    ]
-
-    return {
-        "date": date_str,
-        "variants": variants,
-        "aspect_ratio": aspect_ratio,
-        "license": metadata.get("license", ""),
-        "license_url": metadata.get("license_url", ""),
-        "source": metadata.get("source", ""),
-        "source_url": metadata.get("source_url", ""),
-    }
-
-
 def pick_style(mode: str) -> tuple[Image.Image, dict]:
     """Pick a style reference image. Returns (PIL Image, metadata dict)."""
     if mode == "random":
