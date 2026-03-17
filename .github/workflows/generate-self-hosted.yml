@@ -1,0 +1,74 @@
+name: Generate Daily Art (Self-Hosted Mac Mini)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day)
+
+jobs:
+  generate:
+    # Requires a self-hosted runner registered with these labels.
+    # Setup: https://docs.github.com/en/actions/hosting-your-own-runners
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    env:
+      # Persistent directories on the Mac Mini avoid re-downloading each run.
+      UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
+      MODELS_CACHE: models/weights
+    steps:
+      - uses: actions/checkout@v6
+
+      # mise manages python, uv, just — install once, reuse across runs.
+      # On first run: `curl https://mise.run | sh` then `mise install` on
+      # the runner machine.  Subsequent runs just verify tools are present.
+      - name: Verify toolchain (mise)
+        run: |
+          command -v mise >/dev/null 2>&1 || { echo "::error::mise not found — run 'curl https://mise.run | sh && mise install' on the runner"; exit 1; }
+          mise install --yes
+          echo "Python: $(python3 --version)"
+          echo "uv: $(uv --version)"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Download models (cached on disk)
+        run: python models/download_models.py
+
+      - name: Generate and upload
+        run: uv run python src/main.py --source unsplash
+        env:
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: bauhaus
+          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          STYLE_MODE: curated
+          LANDSCAPES_ONLY: 'true'
+
+      - name: Notify success
+        if: success() && env.NTFY_TOPIC != ''
+        continue-on-error: true
+        run: |
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
+            -H "Title: Daily art generation succeeded (Mac Mini)" \
+            -H "Priority: default" \
+            -H "Tags: white_check_mark,apple" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "Self-hosted generate completed successfully." \
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+      - name: Notify failure
+        if: failure() && env.NTFY_TOPIC != ''
+        continue-on-error: true
+        run: |
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
+            -H "Title: Daily art generation failed (Mac Mini)" \
+            -H "Priority: high" \
+            -H "Tags: x,apple" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "Self-hosted generate failed. Check the run logs." \
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

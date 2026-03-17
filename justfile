@@ -28,6 +28,10 @@ check:
 generate *ARGS:
     uv run python src/main.py --dry-run {{ ARGS }}
 
+# Generate locally with MPS acceleration (Apple Silicon)
+generate-mps *ARGS:
+    uv run python src/main.py --dry-run {{ ARGS }}
+
 # Build Docker image
 docker-build:
     docker build -t bauhaus .
