@@ -16,6 +16,7 @@
  *   (AVIF > WebP > JPEG) and falls back to JPEG when a variant is missing.
  *
  * Query parameters:
+ *   ?progressive=true    → serve progressive JPEG variant (falls back to baseline)
  *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
  */
 
@@ -64,6 +65,10 @@ async function getToday(bucket: R2Bucket): Promise<string> {
   return data.date;
 }
 
+function isProgressive(url: URL): boolean {
+  return url.searchParams.get("progressive") === "true";
+}
+
 function isStrip(url: URL): boolean {
   return url.searchParams.get("strip") === "true";
 }
@@ -79,8 +84,15 @@ async function getImageObject(
   bucket: R2Bucket,
   basePath: string,
   format: ImageFormat,
+  progressive: boolean = false,
   strip: boolean = false,
 ): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
+  // For JPEG with ?progressive=true, try the progressive variant first
+  if (format === "jpeg" && progressive) {
+    const obj = await bucket.get(`${basePath}.progressive.jpg`);
+    if (obj) return { obj, contentType: "image/jpeg" };
+  }
+
   // For JPEG with ?strip=true, try the stripped variant first
   if (strip) {
     const stripped = await bucket.get(`${basePath}.stripped.jpg`);
@@ -102,11 +114,13 @@ async function getImageObject(
 }
 
 function imageResponse(obj: R2ObjectBody, contentType: string): Response {
+  const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   return new Response(obj.body, {
     headers: {
       "Content-Type": contentType,
       "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
       "Vary": "Accept",
+      "X-Variant": variant,
       ...corsHeaders(),
     },
   });
@@ -133,6 +147,7 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const progressive = isProgressive(url);
     const strip = isStrip(url);
 
     if (request.method === "OPTIONS") {
@@ -148,7 +163,7 @@ export default {
     // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, strip);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip);
       if (!result) return notFound("No image for today");
       return imageResponse(result.obj, result.contentType);
     }
@@ -188,7 +203,7 @@ export default {
     // GET /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      const result = await getImageObject(env.BUCKET, `originals/${datePath(origMatch[1])}`, format);
+      const result = await getImageObject(env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip);
       if (!result) return notFound(`No original for ${origMatch[1]}`);
       return imageResponse(result.obj, result.contentType);
     }
@@ -196,7 +211,7 @@ export default {
     // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, strip);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip);
       if (!result) return notFound(`No image for ${dateMatch[1]}`);
       return imageResponse(result.obj, result.contentType);
     }

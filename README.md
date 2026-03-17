@@ -83,6 +83,12 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 
+### Query parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
+
 ## Local development
 
 Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
