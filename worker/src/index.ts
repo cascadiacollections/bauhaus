@@ -113,12 +113,18 @@ async function getImageObject(
   return null;
 }
 
-function imageResponse(obj: R2ObjectBody, contentType: string): Response {
+/** Cache-control for date-specific resources — immutable since content never changes. */
+const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable";
+
+/** Cache-control for /api/today* — short-lived since it resolves to a new date each day. */
+const TODAY_CACHE = "public, max-age=300, s-maxage=300, stale-while-revalidate=60";
+
+function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
   const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   return new Response(obj.body, {
     headers: {
       "Content-Type": contentType,
-      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
+      "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
       "Vary": "Accept",
       "X-Variant": variant,
       ...corsHeaders(),
@@ -126,11 +132,11 @@ function imageResponse(obj: R2ObjectBody, contentType: string): Response {
   });
 }
 
-function jsonResponse(obj: R2ObjectBody): Response {
+function jsonResponse(obj: R2ObjectBody, today = false): Response {
   return new Response(obj.body, {
     headers: {
       "Content-Type": "application/json",
-      "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
+      "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
       ...corsHeaders(),
     },
   });
@@ -165,7 +171,7 @@ export default {
       const today = await getToday(env.BUCKET);
       const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip);
       if (!result) return notFound("No image for today");
-      return imageResponse(result.obj, result.contentType);
+      return imageResponse(result.obj, result.contentType, true);
     }
 
     // GET /api/today.json → metadata
@@ -173,7 +179,7 @@ export default {
       const today = await getToday(env.BUCKET);
       const obj = await env.BUCKET.get(`metadata/${datePath(today)}.json`);
       if (!obj) return notFound("No metadata for today");
-      return jsonResponse(obj);
+      return jsonResponse(obj, true);
     }
 
     // GET /api/today.manifest.json → responsive manifest
@@ -181,7 +187,7 @@ export default {
       const today = await getToday(env.BUCKET);
       const obj = await env.BUCKET.get(`manifests/${datePath(today)}.json`);
       if (!obj) return notFound("No manifest for today");
-      return jsonResponse(obj);
+      return jsonResponse(obj, true);
     }
 
     // GET /api/:date.manifest.json → responsive manifest for date
