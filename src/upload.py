@@ -18,20 +18,23 @@ def _get_client():
     )
 
 
+_VARIANT_CONTENT_TYPES: dict[str, str] = {
+    "avif": "image/avif",
+    "webp": "image/webp",
+}
+
+
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
     metadata: dict,
+    manifest: dict | None = None,
     bucket: str | None = None,
     today: date | None = None,
     variants: dict[str, bytes] | None = None,
-    manifest: dict | None = None,
     stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, variants, manifest, and metadata to R2.
-
-    Returns dict of uploaded keys.
-    """
+    """Upload original, stylized, variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -62,7 +65,7 @@ def upload(
     keys["stylized"] = key
 
     # Image variants (AVIF, WebP, progressive, stripped)
-    _VARIANT_CONTENT_TYPES = {
+    _all_variant_types = {
         "avif": "image/avif",
         "webp": "image/webp",
         "progressive.jpg": "image/jpeg",
@@ -75,7 +78,7 @@ def upload(
                 Bucket=bucket,
                 Key=key,
                 Body=data,
-                ContentType=_VARIANT_CONTENT_TYPES.get(suffix, "application/octet-stream"),
+                ContentType=_all_variant_types.get(suffix, _VARIANT_CONTENT_TYPES.get(suffix, f"image/{suffix.split('.')[-1]}")),
                 CacheControl="public, max-age=31536000, immutable",
             )
             keys[f"stylized_{suffix.replace('.', '_')}"] = key
@@ -93,8 +96,8 @@ def upload(
     )
     keys["metadata"] = key
 
-    # Manifest JSON
-    if manifest:
+    # Manifest JSON (responsive variants)
+    if manifest is not None:
         key = f"manifests/{date_path}.json"
         client.put_object(
             Bucket=bucket,

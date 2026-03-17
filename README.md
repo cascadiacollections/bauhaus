@@ -55,10 +55,11 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT)
   1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
-  4. Upload original + stylized + metadata to Cloudflare R2
+  4. Generate AVIF + WebP variants for smaller files and faster loads
+  5. Upload original + stylized (JPEG/AVIF/WebP) + metadata to Cloudflare R2
          |
   CF Worker API <-- R2 bucket
-    GET /api/today      -> stylized image
+    GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
     GET /api/today.json -> metadata
     GET /api/:date      -> archive
 ```
@@ -77,10 +78,12 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/today` | Today's stylized image |
+| `GET /api/today` | Today's stylized image (content-negotiated: AVIF → WebP → JPEG) |
 | `GET /api/today.json` | Today's metadata (title, artist, source, license, variants) |
 | `GET /api/today.manifest.json` | Variant manifest (srcset / responsive helper) |
-| `GET /api/YYYY-MM-DD` | Stylized image for a specific date |
+| `GET /api/YYYY-MM-DD` | Stylized image for a specific date (content-negotiated) |
+| `GET /api/YYYY-MM-DD.avif` | Stylized image (AVIF) for a specific date |
+| `GET /api/YYYY-MM-DD.webp` | Stylized image (WebP) for a specific date |
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
@@ -98,6 +101,14 @@ If the preferred format is missing, it falls back to JPEG.
 | `strip` | `true` | Serve EXIF-stripped (privacy-safe) variant |
 
 All image responses include a `Vary: Accept` header for correct caching.
+
+The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Explicit `.avif` and `.webp` extensions are also supported.
+
+### Query parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
 
 ## Local development
 
@@ -155,6 +166,7 @@ just worker-check     # typecheck
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
+| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`) |
 | `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
 | `GENERATE_VARIANTS` | `true` (default) generate AVIF, WebP, progressive, and stripped variants alongside JPEG; `false` to disable |
 

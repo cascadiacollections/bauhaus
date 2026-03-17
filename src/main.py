@@ -18,6 +18,7 @@ from postprocess import postprocess
 from quality import score_image
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
+from variants import generate_variants
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
@@ -76,8 +77,14 @@ def strip_exif(image: Image.Image) -> bytes:
     return buf.getvalue()
 
 
-def embed_exif(image: Image.Image, metadata: dict) -> bytes:
-    """Encode image as JPEG with EXIF metadata (title, artist, copyright)."""
+def embed_exif(image: Image.Image, metadata: dict, progressive: bool = False) -> bytes:
+    """Encode image as JPEG with EXIF metadata (title, artist, copyright).
+
+    Args:
+        image: PIL Image to encode.
+        metadata: Dict with title, artist/photographer, license info.
+        progressive: If True, encode as progressive JPEG for faster perceived load.
+    """
     exif = image.getexif()
     exif[_EXIF_IMAGE_DESCRIPTION] = metadata.get("title", "")
     artist = metadata.get("photographer") or metadata.get("artist", "")
@@ -86,7 +93,7 @@ def embed_exif(image: Image.Image, metadata: dict) -> bytes:
     license_url = metadata.get("license_url", "")
     exif[_EXIF_COPYRIGHT] = f"{license_name} — {license_url}" if license_url else license_name
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95, exif=exif.tobytes())
+    image.save(buf, format="JPEG", quality=95, progressive=progressive, exif=exif.tobytes())
     return buf.getvalue()
 
 
@@ -233,6 +240,54 @@ def load_styles_manifest() -> list[dict]:
     return json.loads(manifest.read_text())
 
 
+def build_manifest(
+    stylized_bytes: bytes,
+    original_bytes: bytes,
+    metadata: dict,
+    today: date | None = None,
+) -> dict:
+    """Build a manifest describing available image variants for srcset/responsive use."""
+    today = today or date.today()
+    date_str = today.isoformat()
+
+    stylized_img = Image.open(BytesIO(stylized_bytes))
+    original_img = Image.open(BytesIO(original_bytes))
+
+    sw, sh = stylized_img.size
+    ow, oh = original_img.size
+
+    g = gcd(sw, sh)
+    # aspect_ratio reflects the stylized (primary) variant dimensions
+    aspect_ratio = f"{sw // g}:{sh // g}"
+
+    variants = [
+        {
+            "width": sw,
+            "height": sh,
+            "format": "jpeg",
+            "url": f"/api/{date_str}",
+            "size_bytes": len(stylized_bytes),
+        },
+        {
+            "width": ow,
+            "height": oh,
+            "format": "jpeg",
+            "url": f"/api/{date_str}/original",
+            "size_bytes": len(original_bytes),
+        },
+    ]
+
+    return {
+        "date": date_str,
+        "variants": variants,
+        "aspect_ratio": aspect_ratio,
+        "license": metadata.get("license", ""),
+        "license_url": metadata.get("license_url", ""),
+        "source": metadata.get("source", ""),
+        "source_url": metadata.get("source_url", ""),
+    }
+
+
 def pick_style(mode: str) -> tuple[Image.Image, dict]:
     """Pick a style reference image. Returns (PIL Image, metadata dict)."""
     if mode == "random":
@@ -311,6 +366,9 @@ def main():
     parser.add_argument("--max-size", type=int,
                         default=int(os.environ.get("MAX_SIZE", "1920")),
                         help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
+    parser.add_argument("--variants", action=argparse.BooleanOptionalAction,
+                        default=os.environ.get("GENERATE_VARIANTS", "true").lower() != "false",
+                        help="Generate AVIF and WebP variants (default: on, env: GENERATE_VARIANTS)")
     args = parser.parse_args()
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
@@ -417,7 +475,9 @@ def main():
 
     # Add structured license details and variant descriptors
     metadata["license_details"] = build_license_details(metadata)
-    today_str = date.today().isoformat()
+    # Capture today once to avoid day-boundary skew between manifest and upload
+    today = date.today()
+    today_str = today.isoformat()
     metadata["variants"] = build_variants(
         stylized, stylized_bytes,
         original_img, original_bytes,
@@ -454,25 +514,23 @@ def main():
         original_path = OUTPUT_DIR / "original.jpg"
         stylized_path = OUTPUT_DIR / "stylized.jpg"
         metadata_path = OUTPUT_DIR / "metadata.json"
+        manifest_path = OUTPUT_DIR / "manifest.json"
 
         original_path.write_bytes(original_bytes)
         stylized_path.write_bytes(stylized_bytes)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         print(f"\nDry run complete:")
         print(f"  Original:  {original_path}")
         print(f"  Stylized:  {stylized_path}")
         print(f"  Metadata:  {metadata_path}")
+        print(f"  Manifest:  {manifest_path}")
 
         for suffix, data in sorted(variants.items()):
             variant_path = OUTPUT_DIR / f"stylized.{suffix}"
             variant_path.write_bytes(data)
             print(f"  Variant:   {variant_path}")
-
-        if manifest:
-            manifest_path = OUTPUT_DIR / "manifest.json"
-            manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-            print(f"  Manifest:  {manifest_path}")
 
         if stripped_bytes:
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
@@ -480,10 +538,15 @@ def main():
             print(f"  Stripped:  {stripped_path}")
         return
 
-    # 6. Upload to R2
+    # 7. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata,
-                  variants=variants, manifest=manifest, stripped_bytes=stripped_bytes)
+    keys = upload(
+        original_bytes, stylized_bytes, metadata,
+        manifest=manifest,
+        today=today,
+        variants=variants,
+        stripped_bytes=stripped_bytes,
+    )
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")
