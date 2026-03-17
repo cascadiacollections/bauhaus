@@ -266,8 +266,11 @@ def main():
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
 
+    # Capture today once to avoid day-boundary skew between manifest and upload
+    today = date.today()
+
     # Build manifest for responsive variants
-    manifest = build_manifest(stylized_bytes, original_bytes, metadata)
+    manifest = build_manifest(stylized_bytes, original_bytes, metadata, today=today)
 
     if args.dry_run:
         # Save locally
@@ -291,7 +294,7 @@ def main():
 
     # 6. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata, manifest=manifest)
+    keys = upload(original_bytes, stylized_bytes, metadata, manifest=manifest, today=today)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")
