@@ -10,6 +10,7 @@ from io import BytesIO
 from pathlib import Path
 
 from PIL import Image
+from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
 
 from fetch import fetch_artwork
 from postprocess import postprocess
@@ -24,6 +25,54 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 _EXIF_IMAGE_DESCRIPTION = 0x010E
 _EXIF_ARTIST = 0x013B
 _EXIF_COPYRIGHT = 0x8298
+
+
+def extract_exif(image_bytes: bytes) -> dict[str, str]:
+    """Extract EXIF metadata from image bytes into a plain dict.
+
+    Returns a dict mapping human-readable tag names to their string values.
+    Binary or non-serialisable values are skipped.
+    """
+    with Image.open(BytesIO(image_bytes)) as img:
+        exif_data = img.getexif()
+        result: dict[str, str] = {}
+        for tag_id, value in exif_data.items():
+            tag_name = EXIF_TAGS.get(tag_id, str(tag_id))
+            if isinstance(value, bytes):
+                continue
+            result[tag_name] = str(value)
+
+        # Try to extract EXIF IFD (shutter speed, ISO, etc.)
+        try:
+            exif_ifd = exif_data.get_ifd(IFD.Exif)
+            for tag_id, value in exif_ifd.items():
+                tag_name = EXIF_TAGS.get(tag_id, str(tag_id))
+                if isinstance(value, bytes):
+                    continue
+                result[tag_name] = str(value)
+        except KeyError:
+            pass
+
+        # Try to extract GPS IFD
+        try:
+            from PIL.ExifTags import GPSTAGS
+            gps_ifd = exif_data.get_ifd(IFD.GPSInfo)
+            for tag_id, value in gps_ifd.items():
+                tag_name = GPSTAGS.get(tag_id, str(tag_id))
+                if isinstance(value, bytes):
+                    continue
+                result[f"GPS{tag_name}"] = str(value)
+        except KeyError:
+            pass
+
+    return result
+
+
+def strip_exif(image: Image.Image) -> bytes:
+    """Encode image as JPEG without any EXIF metadata."""
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
 
 
 def embed_exif(image: Image.Image, metadata: dict) -> bytes:
@@ -119,6 +168,9 @@ def main():
                         help="Apply sharpening (default: on)")
     parser.add_argument("--upscale", action="store_true", default=False,
                         help="Apply super-resolution upscaling (default: off)")
+    parser.add_argument("--strip", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Pre-generate EXIF-stripped image variant (default: on)")
     parser.add_argument("--max-size", type=int,
                         default=int(os.environ.get("MAX_SIZE", "1920")),
                         help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
@@ -211,11 +263,26 @@ def main():
         "upscale": args.upscale,
     }
 
+    # Extract EXIF metadata from source image
+    print("Extracting source EXIF metadata...")
+    source_exif = extract_exif(artwork.image_bytes)
+    if source_exif:
+        metadata["exif"] = source_exif
+        print(f"  Extracted {len(source_exif)} EXIF tags")
+    else:
+        print("  No EXIF metadata found in source image")
+
     # Embed EXIF metadata into images
     print("Embedding EXIF metadata...")
     stylized_bytes = embed_exif(stylized, metadata)
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
+
+    # Generate stripped variant (no EXIF)
+    stripped_bytes = None
+    if args.strip:
+        print("Generating EXIF-stripped variant...")
+        stripped_bytes = strip_exif(stylized)
 
     if args.dry_run:
         # Save locally
@@ -232,11 +299,16 @@ def main():
         print(f"  Original:  {original_path}")
         print(f"  Stylized:  {stylized_path}")
         print(f"  Metadata:  {metadata_path}")
+
+        if stripped_bytes:
+            stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
+            stripped_path.write_bytes(stripped_bytes)
+            print(f"  Stripped:  {stripped_path}")
         return
 
     # 6. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata)
+    keys = upload(original_bytes, stylized_bytes, metadata, stripped_bytes=stripped_bytes)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")
