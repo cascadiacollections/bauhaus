@@ -1,12 +1,24 @@
-"""Tests for main.py — styles manifest, style rotation, and CLI args."""
+"""Tests for main.py — styles manifest, style rotation, CLI args, and metadata helpers."""
 
 import argparse
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
-from main import load_styles_manifest, main, STYLES_DIR
+from PIL import Image
+
+from main import (
+    build_license_details,
+    build_variants,
+    embed_exif,
+    extract_exif,
+    load_styles_manifest,
+    main,
+    strip_exif,
+    STYLES_DIR,
+)
 
 
 class TestLoadStylesManifest:
@@ -76,3 +88,165 @@ class TestMaxSizeCLIArg:
                                 default=int(os.environ.get("MAX_SIZE", "1024")))
             args = parser.parse_args(["--max-size", "768"])
             assert args.max_size == 768
+
+
+class TestBuildLicenseDetails:
+    """Tests for build_license_details() helper."""
+
+    def test_cc0_metadata(self):
+        meta = {
+            "license": "CC0-1.0",
+            "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "source": "met",
+            "source_url": "https://www.metmuseum.org/art/collection/search/12345",
+        }
+        details = build_license_details(meta)
+        assert details["type"] == "CC0-1.0"
+        assert details["url"] == "https://creativecommons.org/publicdomain/zero/1.0/"
+        assert details["source"] == "met"
+        assert details["source_url"] == "https://www.metmuseum.org/art/collection/search/12345"
+
+    def test_unsplash_metadata(self):
+        meta = {
+            "license": "Unsplash License",
+            "license_url": "https://unsplash.com/license",
+            "source": "unsplash",
+            "source_url": "https://unsplash.com/photos/abc",
+        }
+        details = build_license_details(meta)
+        assert details["type"] == "Unsplash License"
+        assert details["url"] == "https://unsplash.com/license"
+        assert details["source"] == "unsplash"
+
+    def test_missing_fields_default_to_empty(self):
+        details = build_license_details({})
+        assert details["type"] == ""
+        assert details["url"] == ""
+        assert details["source"] == ""
+        assert details["source_url"] == ""
+
+
+class TestBuildVariants:
+    """Tests for build_variants() helper."""
+
+    def _make_image(self, width: int, height: int) -> Image.Image:
+        return Image.new("RGB", (width, height), color="red")
+
+    def test_returns_two_variants(self):
+        stylized = self._make_image(1920, 1080)
+        original = self._make_image(3840, 2160)
+        variants = build_variants(stylized, b"s" * 100, original, b"o" * 200, "2025-07-14")
+        assert len(variants) == 2
+
+    def test_stylized_variant_fields(self):
+        stylized = self._make_image(1920, 1080)
+        original = self._make_image(3840, 2160)
+        variants = build_variants(stylized, b"s" * 500, original, b"o" * 1000, "2025-07-14")
+        v = variants[0]
+        assert v["type"] == "stylized"
+        assert v["format"] == "image/jpeg"
+        assert v["width"] == 1920
+        assert v["height"] == 1080
+        assert v["url"] == "/api/2025-07-14"
+        assert v["size_bytes"] == 500
+
+    def test_original_variant_fields(self):
+        stylized = self._make_image(1920, 1080)
+        original = self._make_image(3840, 2160)
+        variants = build_variants(stylized, b"s" * 500, original, b"o" * 1000, "2025-07-14")
+        v = variants[1]
+        assert v["type"] == "original"
+        assert v["format"] == "image/jpeg"
+        assert v["width"] == 3840
+        assert v["height"] == 2160
+        assert v["url"] == "/api/2025-07-14/original"
+        assert v["size_bytes"] == 1000
+
+    def test_url_uses_provided_date(self):
+        img = self._make_image(100, 100)
+        variants = build_variants(img, b"x", img, b"y", "2026-01-01")
+        assert variants[0]["url"] == "/api/2026-01-01"
+        assert variants[1]["url"] == "/api/2026-01-01/original"
+
+
+def _make_test_image(width=100, height=100) -> Image.Image:
+    """Create a simple RGB test image."""
+    return Image.new("RGB", (width, height), color=(128, 64, 32))
+
+
+def _make_test_image_bytes(width=100, height=100) -> bytes:
+    """Create JPEG bytes from a simple test image."""
+    img = _make_test_image(width, height)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+class TestExtractExif:
+    """Tests for extract_exif() — EXIF metadata extraction from image bytes."""
+
+    def test_extract_from_image_without_exif(self):
+        """Plain JPEG with no EXIF should return an empty dict."""
+        img_bytes = _make_test_image_bytes()
+        result = extract_exif(img_bytes)
+        assert isinstance(result, dict)
+        assert len(result) == 0
+
+    def test_extract_from_image_with_exif(self):
+        """JPEG with embedded EXIF should have tags extracted."""
+        img = _make_test_image()
+        metadata = {"title": "Sunset Over Mountains", "artist": "Jane Doe",
+                     "license": "CC0-1.0", "license_url": "https://example.com"}
+        img_bytes = embed_exif(img, metadata)
+        result = extract_exif(img_bytes)
+        assert isinstance(result, dict)
+        assert result.get("ImageDescription") == "Sunset Over Mountains"
+        assert result.get("Artist") == "Jane Doe"
+        assert "Copyright" in result
+
+    def test_extract_returns_strings(self):
+        """All values in extracted EXIF dict should be strings."""
+        img = _make_test_image()
+        metadata = {"title": "Test", "artist": "Artist"}
+        img_bytes = embed_exif(img, metadata)
+        result = extract_exif(img_bytes)
+        for key, val in result.items():
+            assert isinstance(key, str)
+            assert isinstance(val, str)
+
+
+class TestStripExif:
+    """Tests for strip_exif() — producing EXIF-free JPEG bytes."""
+
+    def test_strip_returns_valid_jpeg(self):
+        """strip_exif should return valid JPEG bytes."""
+        img = _make_test_image()
+        result = strip_exif(img)
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+        # Verify it's a valid JPEG
+        reopened = Image.open(BytesIO(result))
+        assert reopened.format == "JPEG"
+
+    def test_strip_removes_exif(self):
+        """strip_exif should produce an image with no EXIF metadata."""
+        img = _make_test_image()
+        metadata = {"title": "Secret Title", "artist": "Secret Artist",
+                     "license": "CC0-1.0"}
+        # First embed EXIF
+        with_exif = embed_exif(img, metadata)
+        # Verify EXIF is present
+        assert len(extract_exif(with_exif)) > 0
+
+        # Now strip
+        img_with_exif = Image.open(BytesIO(with_exif))
+        stripped = strip_exif(img_with_exif)
+        stripped_exif = extract_exif(stripped)
+        assert len(stripped_exif) == 0
+
+    def test_strip_preserves_image_dimensions(self):
+        """Stripped image should have same dimensions as original."""
+        img = _make_test_image(200, 150)
+        stripped = strip_exif(img)
+        reopened = Image.open(BytesIO(stripped))
+        assert reopened.size == (200, 150)
