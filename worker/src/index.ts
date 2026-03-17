@@ -2,28 +2,52 @@
  * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork from R2.
  *
  * Routes:
- *   GET /api/today            → today's stylized image (content-negotiated)
- *   GET /api/today.json       → today's metadata
- *   GET /api/today.avif       → today's stylized image (AVIF)
- *   GET /api/today.webp       → today's stylized image (WebP)
- *   GET /api/:date            → stylized image for YYYY-MM-DD (content-negotiated)
- *   GET /api/:date/original   → original unstylized image
- *   GET /api/:date.json       → metadata for date
- *   GET /api/:date.avif       → stylized image (AVIF) for date
- *   GET /api/:date.webp       → stylized image (WebP) for date
+ *   GET /api/today       → today's stylized image
+ *   GET /api/today.json  → today's metadata
+ *   GET /api/:date       → stylized image for YYYY-MM-DD
+ *   GET /api/:date/original → original unstylized image
+ *   GET /api/:date.json  → metadata for date
+ *
+ * Format negotiation:
+ *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
+ *   Worker inspects Accept header to pick the best pre-generated variant
+ *   (AVIF > WebP > JPEG) and falls back to JPEG when a variant is missing.
+ *
+ * Query parameters:
+ *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
  */
 
 interface Env {
   BUCKET: R2Bucket;
 }
 
-type ImageFormat = "avif" | "webp" | "jpg";
+/** Supported image formats in negotiation priority order: AVIF > WebP > JPEG. */
+type ImageFormat = "avif" | "webp" | "jpeg";
 
-const FORMAT_CONTENT_TYPES: Record<ImageFormat, string> = {
+const FORMAT_EXT: Record<ImageFormat, string> = {
+  avif: ".avif",
+  webp: ".webp",
+  jpeg: ".jpg",
+};
+
+const FORMAT_CONTENT_TYPE: Record<ImageFormat, string> = {
   avif: "image/avif",
   webp: "image/webp",
-  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
 };
+
+export function negotiateFormat(request: Request, url: URL): ImageFormat {
+  const param = url.searchParams.get("format")?.toLowerCase();
+  if (param === "avif") return "avif";
+  if (param === "webp") return "webp";
+  if (param === "jpeg") return "jpeg";
+
+  // ?format=auto or absent → negotiate via Accept header
+  const accept = request.headers.get("Accept") ?? "";
+  if (accept.includes("image/avif")) return "avif";
+  if (accept.includes("image/webp")) return "webp";
+  return "jpeg";
+}
 
 function datePath(dateStr: string): string {
   // YYYY-MM-DD → YYYY/MM/DD
@@ -38,11 +62,8 @@ async function getToday(bucket: R2Bucket): Promise<string> {
   return data.date;
 }
 
-function preferredFormat(request: Request): ImageFormat {
-  const accept = request.headers.get("Accept") || "";
-  if (accept.includes("image/avif")) return "avif";
-  if (accept.includes("image/webp")) return "webp";
-  return "jpg";
+function isStrip(url: URL): boolean {
+  return url.searchParams.get("strip") === "true";
 }
 
 function corsHeaders(): HeadersInit {
@@ -52,12 +73,38 @@ function corsHeaders(): HeadersInit {
   };
 }
 
-function imageResponse(obj: R2ObjectBody, format: ImageFormat = "jpg"): Response {
+async function getImageObject(
+  bucket: R2Bucket,
+  basePath: string,
+  format: ImageFormat,
+  strip: boolean = false,
+): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
+  // For JPEG with ?strip=true, try the stripped variant first
+  if (strip) {
+    const stripped = await bucket.get(`${basePath}.stripped.jpg`);
+    if (stripped) return { obj: stripped, contentType: "image/jpeg" };
+  }
+
+  // Try the negotiated format
+  const key = `${basePath}${FORMAT_EXT[format]}`;
+  const obj = await bucket.get(key);
+  if (obj) return { obj, contentType: FORMAT_CONTENT_TYPE[format] };
+
+  // Fall back to JPEG if the requested format is unavailable
+  if (format !== "jpeg") {
+    const fallback = await bucket.get(`${basePath}.jpg`);
+    if (fallback) return { obj: fallback, contentType: "image/jpeg" };
+  }
+
+  return null;
+}
+
+function imageResponse(obj: R2ObjectBody, contentType: string): Response {
   return new Response(obj.body, {
     headers: {
-      "Content-Type": obj.httpMetadata?.contentType ?? FORMAT_CONTENT_TYPES[format],
+      "Content-Type": contentType,
       "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
-      Vary: "Accept",
+      "Vary": "Accept",
       ...corsHeaders(),
     },
   });
@@ -80,24 +127,11 @@ function notFound(msg: string): Response {
   });
 }
 
-async function getStylizedImage(
-  bucket: R2Bucket,
-  dp: string,
-  format: ImageFormat,
-): Promise<{ obj: R2ObjectBody; format: ImageFormat } | null> {
-  // Try requested format first, fall back to JPEG
-  const formats: ImageFormat[] = format === "jpg" ? ["jpg"] : [format, "jpg"];
-  for (const fmt of formats) {
-    const obj = await bucket.get(`stylized/${dp}.${fmt}`);
-    if (obj) return { obj, format: fmt };
-  }
-  return null;
-}
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const strip = isStrip(url);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
@@ -107,23 +141,14 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     }
 
-    // GET /api/today.avif or /api/today.webp → explicit format
-    const todayFmtMatch = path.match(/^\/api\/today\.(avif|webp)$/);
-    if (todayFmtMatch) {
-      const fmt = todayFmtMatch[1] as ImageFormat;
-      const today = await getToday(env.BUCKET);
-      const result = await getStylizedImage(env.BUCKET, datePath(today), fmt);
-      if (!result) return notFound("No image for today");
-      return imageResponse(result.obj, result.format);
-    }
+    const format = negotiateFormat(request, url);
 
-    // GET /api/today → stylized image (content-negotiated)
+    // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const fmt = preferredFormat(request);
-      const result = await getStylizedImage(env.BUCKET, datePath(today), fmt);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, strip);
       if (!result) return notFound("No image for today");
-      return imageResponse(result.obj, result.format);
+      return imageResponse(result.obj, result.contentType);
     }
 
     // GET /api/today.json → metadata
@@ -142,30 +167,20 @@ export default {
       return jsonResponse(obj);
     }
 
-    // GET /api/:date.avif or /api/:date.webp → explicit format
-    const dateFmtMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.(avif|webp)$/);
-    if (dateFmtMatch) {
-      const fmt = dateFmtMatch[2] as ImageFormat;
-      const result = await getStylizedImage(env.BUCKET, datePath(dateFmtMatch[1]), fmt);
-      if (!result) return notFound(`No image for ${dateFmtMatch[1]}`);
-      return imageResponse(result.obj, result.format);
-    }
-
     // GET /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      const obj = await env.BUCKET.get(`originals/${datePath(origMatch[1])}.jpg`);
-      if (!obj) return notFound(`No original for ${origMatch[1]}`);
-      return imageResponse(obj);
+      const result = await getImageObject(env.BUCKET, `originals/${datePath(origMatch[1])}`, format);
+      if (!result) return notFound(`No original for ${origMatch[1]}`);
+      return imageResponse(result.obj, result.contentType);
     }
 
-    // GET /api/:date → stylized image for date (content-negotiated)
+    // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const fmt = preferredFormat(request);
-      const result = await getStylizedImage(env.BUCKET, datePath(dateMatch[1]), fmt);
+      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, strip);
       if (!result) return notFound(`No image for ${dateMatch[1]}`);
-      return imageResponse(result.obj, result.format);
+      return imageResponse(result.obj, result.contentType);
     }
 
     return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");

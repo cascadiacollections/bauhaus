@@ -31,6 +31,7 @@ def upload(
     bucket: str | None = None,
     today: date | None = None,
     variants: dict[str, bytes] | None = None,
+    stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
     """Upload original, stylized, variants, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
@@ -86,6 +87,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["metadata"] = key
+
+    # Stripped variant (no EXIF)
+    if stripped_bytes is not None:
+        key = f"stylized/{date_path}.stripped.jpg"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=stripped_bytes,
+            ContentType="image/jpeg",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["stripped"] = key
 
     # Update latest pointer (short cache)
     client.put_object(
