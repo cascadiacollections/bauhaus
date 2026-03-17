@@ -70,7 +70,7 @@ def upload(
     keys["metadata"] = key
 
     # Stripped variant (no EXIF)
-    if stripped_bytes:
+    if stripped_bytes is not None:
         key = f"stylized/{date_path}.stripped.jpg"
         client.put_object(
             Bucket=bucket,

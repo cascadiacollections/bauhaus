@@ -77,9 +77,14 @@ export default {
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
       const strip = url.searchParams.get("strip") === "true";
-      const suffix = strip ? ".stripped.jpg" : ".jpg";
-      const obj = await env.BUCKET.get(`stylized/${datePath(today)}${suffix}`);
-      if (!obj) return notFound(strip ? "No stripped image for today" : "No image for today");
+      let obj: R2ObjectBody | null = null;
+      if (strip) {
+        obj = await env.BUCKET.get(`stylized/${datePath(today)}.stripped.jpg`);
+      }
+      if (!obj) {
+        obj = await env.BUCKET.get(`stylized/${datePath(today)}.jpg`);
+      }
+      if (!obj) return notFound("No image for today");
       return imageResponse(obj);
     }
 
@@ -111,9 +116,14 @@ export default {
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
       const strip = url.searchParams.get("strip") === "true";
-      const suffix = strip ? ".stripped.jpg" : ".jpg";
-      const obj = await env.BUCKET.get(`stylized/${datePath(dateMatch[1])}${suffix}`);
-      if (!obj) return notFound(strip ? `No stripped image for ${dateMatch[1]}` : `No image for ${dateMatch[1]}`);
+      let obj: R2ObjectBody | null = null;
+      if (strip) {
+        obj = await env.BUCKET.get(`stylized/${datePath(dateMatch[1])}.stripped.jpg`);
+      }
+      if (!obj) {
+        obj = await env.BUCKET.get(`stylized/${datePath(dateMatch[1])}.jpg`);
+      }
+      if (!obj) return notFound(`No image for ${dateMatch[1]}`);
       return imageResponse(obj);
     }
 
