@@ -18,6 +18,12 @@ def _get_client():
     )
 
 
+_VARIANT_CONTENT_TYPES: dict[str, str] = {
+    "avif": "image/avif",
+    "webp": "image/webp",
+}
+
+
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
@@ -25,11 +31,12 @@ def upload(
     manifest: dict | None = None,
     bucket: str | None = None,
     today: date | None = None,
+    variants: dict[str, bytes] | None = None,
     original_progressive_bytes: bytes | None = None,
     stylized_progressive_bytes: bytes | None = None,
     stripped_bytes: bytes | None = None,
 ) -> dict[str, str]:
-    """Upload original, stylized, progressive variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
+    """Upload original, stylized, AVIF/WebP variants, progressive variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
     today = today or date.today()
     date_path = today.strftime("%Y/%m/%d")
@@ -58,6 +65,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["stylized"] = key
+
+    # Stylized image variants (AVIF, WebP)
+    for ext, data in (variants or {}).items():
+        key = f"stylized/{date_path}.{ext}"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=data,
+            ContentType=_VARIANT_CONTENT_TYPES.get(ext, f"image/{ext}"),
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys[f"stylized_{ext}"] = key
 
     # Progressive original variant
     if original_progressive_bytes is not None:
