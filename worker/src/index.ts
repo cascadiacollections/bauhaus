@@ -41,10 +41,12 @@ function corsHeaders(): HeadersInit {
 }
 
 function imageResponse(obj: R2ObjectBody): Response {
+  const variant = obj.key && obj.key.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   return new Response(obj.body, {
     headers: {
       "Content-Type": obj.httpMetadata?.contentType ?? "image/jpeg",
       "Cache-Control": obj.httpMetadata?.cacheControl ?? "public, max-age=86400, s-maxage=86400, stale-while-revalidate=3600",
+      "X-Variant": variant,
       ...corsHeaders(),
     },
   });
