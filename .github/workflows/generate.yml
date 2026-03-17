@@ -48,8 +48,9 @@ jobs:
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''
+        continue-on-error: true
         run: |
-          curl -f \
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
             -H "Title: Daily art generation succeeded" \
             -H "Priority: default" \
             -H "Tags: white_check_mark" \
@@ -61,8 +62,9 @@ jobs:
 
       - name: Notify failure
         if: failure() && env.NTFY_TOPIC != ''
+        continue-on-error: true
         run: |
-          curl -f \
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
             -H "Title: Daily art generation failed" \
             -H "Priority: high" \
             -H "Tags: x" \
