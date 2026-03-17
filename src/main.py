@@ -7,6 +7,7 @@ import random
 import sys
 from datetime import date
 from io import BytesIO
+from math import gcd
 from pathlib import Path
 
 from PIL import Image
@@ -132,6 +133,54 @@ def load_styles_manifest() -> list[dict]:
     if not manifest.exists():
         return []
     return json.loads(manifest.read_text())
+
+
+def build_manifest(
+    stylized_bytes: bytes,
+    original_bytes: bytes,
+    metadata: dict,
+    today: date | None = None,
+) -> dict:
+    """Build a manifest describing available image variants for srcset/responsive use."""
+    today = today or date.today()
+    date_str = today.isoformat()
+
+    stylized_img = Image.open(BytesIO(stylized_bytes))
+    original_img = Image.open(BytesIO(original_bytes))
+
+    sw, sh = stylized_img.size
+    ow, oh = original_img.size
+
+    g = gcd(sw, sh)
+    # aspect_ratio reflects the stylized (primary) variant dimensions
+    aspect_ratio = f"{sw // g}:{sh // g}"
+
+    variants = [
+        {
+            "width": sw,
+            "height": sh,
+            "format": "jpeg",
+            "url": f"/api/{date_str}",
+            "size_bytes": len(stylized_bytes),
+        },
+        {
+            "width": ow,
+            "height": oh,
+            "format": "jpeg",
+            "url": f"/api/{date_str}/original",
+            "size_bytes": len(original_bytes),
+        },
+    ]
+
+    return {
+        "date": date_str,
+        "variants": variants,
+        "aspect_ratio": aspect_ratio,
+        "license": metadata.get("license", ""),
+        "license_url": metadata.get("license_url", ""),
+        "source": metadata.get("source", ""),
+        "source_url": metadata.get("source_url", ""),
+    }
 
 
 def pick_style(mode: str) -> tuple[Image.Image, dict]:
@@ -318,7 +367,9 @@ def main():
 
     # Add structured license details and variant descriptors
     metadata["license_details"] = build_license_details(metadata)
-    today_str = date.today().isoformat()
+    # Capture today once to avoid day-boundary skew between manifest and upload
+    today = date.today()
+    today_str = today.isoformat()
     metadata["variants"] = build_variants(
         stylized, stylized_bytes,
         original_img, original_bytes,
@@ -331,21 +382,27 @@ def main():
         print("Generating EXIF-stripped variant...")
         stripped_bytes = strip_exif(stylized)
 
+    # Build manifest for responsive variants
+    manifest = build_manifest(stylized_bytes, original_bytes, metadata, today=today)
+
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         original_path = OUTPUT_DIR / "original.jpg"
         stylized_path = OUTPUT_DIR / "stylized.jpg"
         metadata_path = OUTPUT_DIR / "metadata.json"
+        manifest_path = OUTPUT_DIR / "manifest.json"
 
         original_path.write_bytes(original_bytes)
         stylized_path.write_bytes(stylized_bytes)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
         print(f"\nDry run complete:")
         print(f"  Original:  {original_path}")
         print(f"  Stylized:  {stylized_path}")
         print(f"  Metadata:  {metadata_path}")
+        print(f"  Manifest:  {manifest_path}")
 
         if stripped_bytes:
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
@@ -355,7 +412,7 @@ def main():
 
     # 6. Upload to R2
     print("Uploading to R2...")
-    keys = upload(original_bytes, stylized_bytes, metadata, stripped_bytes=stripped_bytes)
+    keys = upload(original_bytes, stylized_bytes, metadata, manifest=manifest, today=today, stripped_bytes=stripped_bytes)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")
