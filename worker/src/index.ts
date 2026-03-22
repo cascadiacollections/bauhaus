@@ -151,9 +151,20 @@ async function headImageObject(
 }
 
 /** Returns true when the If-None-Match header value matches the given ETag. */
+function normalizeEtag(etag: string): string {
+  let value = etag.trim();
+  if (value.startsWith("W/")) {
+    value = value.slice(2).trim();
+  }
+  return value;
+}
+
 function etagMatches(ifNoneMatch: string, httpEtag: string): boolean {
   if (ifNoneMatch === "*") return true;
-  return ifNoneMatch.split(",").map((e) => e.trim()).includes(httpEtag);
+  const target = normalizeEtag(httpEtag);
+  return ifNoneMatch
+    .split(",")
+    .some((e) => normalizeEtag(e) === target);
 }
 
 /** Cache-control for date-specific resources — immutable since content never changes. */
