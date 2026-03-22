@@ -113,6 +113,49 @@ async function getImageObject(
   return null;
 }
 
+/**
+ * Resolves which R2 key and content-type would be served for a given image
+ * request, using metadata-only head() calls (Class A ops) instead of get().
+ * Used for If-None-Match checks to avoid reading the full object body.
+ */
+async function headImageObject(
+  bucket: R2Bucket,
+  basePath: string,
+  format: ImageFormat,
+  progressive = false,
+  strip = false,
+): Promise<{ head: R2Object; key: string; contentType: string } | null> {
+  if (format === "jpeg" && progressive) {
+    const key = `${basePath}.progressive.jpg`;
+    const h = await bucket.head(key);
+    if (h) return { head: h, key, contentType: "image/jpeg" };
+  }
+
+  if (strip) {
+    const key = `${basePath}.stripped.jpg`;
+    const h = await bucket.head(key);
+    if (h) return { head: h, key, contentType: "image/jpeg" };
+  }
+
+  const key = `${basePath}${FORMAT_EXT[format]}`;
+  const h = await bucket.head(key);
+  if (h) return { head: h, key, contentType: FORMAT_CONTENT_TYPE[format] };
+
+  if (format !== "jpeg") {
+    const fallbackKey = `${basePath}.jpg`;
+    const fh = await bucket.head(fallbackKey);
+    if (fh) return { head: fh, key: fallbackKey, contentType: "image/jpeg" };
+  }
+
+  return null;
+}
+
+/** Returns true when the If-None-Match header value matches the given ETag. */
+function etagMatches(ifNoneMatch: string, httpEtag: string): boolean {
+  if (ifNoneMatch === "*") return true;
+  return ifNoneMatch.split(",").map((e) => e.trim()).includes(httpEtag);
+}
+
 /** Cache-control for date-specific resources — immutable since content never changes. */
 const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable";
 
@@ -121,24 +164,31 @@ const TODAY_CACHE = "public, max-age=300, s-maxage=300, stale-while-revalidate=6
 
 function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
   const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
-  return new Response(obj.body, {
-    headers: {
-      "Content-Type": contentType,
-      "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
-      "Vary": "Accept",
-      "X-Variant": variant,
-      ...corsHeaders(),
-    },
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": contentType,
+    "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
+    "Vary": "Accept",
+    "X-Variant": variant,
+    ...corsHeaders(),
+  };
+  if (obj.httpEtag) headers["ETag"] = obj.httpEtag;
+  return new Response(obj.body, { headers });
 }
 
 function jsonResponse(obj: R2ObjectBody, today = false): Response {
-  return new Response(obj.body, {
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
-      ...corsHeaders(),
-    },
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
+    ...corsHeaders(),
+  };
+  if (obj.httpEtag) headers["ETag"] = obj.httpEtag;
+  return new Response(obj.body, { headers });
+}
+
+function notModified(etag: string): Response {
+  return new Response(null, {
+    status: 304,
+    headers: { "ETag": etag, ...corsHeaders() },
   });
 }
 
@@ -147,6 +197,66 @@ function notFound(msg: string): Response {
     status: 404,
     headers: { "Content-Type": "application/json", ...corsHeaders() },
   });
+}
+
+/**
+ * Serves an image response, using R2 head() for If-None-Match checks to avoid
+ * reading the full object body when a 304 Not Modified response is appropriate.
+ */
+async function serveImage(
+  request: Request,
+  bucket: R2Bucket,
+  basePath: string,
+  format: ImageFormat,
+  progressive: boolean,
+  strip: boolean,
+  today: boolean,
+  notFoundMsg: string,
+): Promise<Response> {
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch) {
+    const headResult = await headImageObject(bucket, basePath, format, progressive, strip);
+    if (!headResult) return notFound(notFoundMsg);
+    if (etagMatches(ifNoneMatch, headResult.head.httpEtag)) {
+      return notModified(headResult.head.httpEtag);
+    }
+    // ETag doesn't match — fetch the full object using the already-resolved key
+    const obj = await bucket.get(headResult.key);
+    if (!obj) return notFound(notFoundMsg);
+    return imageResponse(obj, headResult.contentType, today);
+  }
+
+  const result = await getImageObject(bucket, basePath, format, progressive, strip);
+  if (!result) return notFound(notFoundMsg);
+  return imageResponse(result.obj, result.contentType, today);
+}
+
+/**
+ * Serves a JSON response, using R2 head() for If-None-Match checks to avoid
+ * reading the full object body when a 304 Not Modified response is appropriate.
+ */
+async function serveJson(
+  request: Request,
+  bucket: R2Bucket,
+  key: string,
+  today: boolean,
+  notFoundMsg: string,
+): Promise<Response> {
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch) {
+    const head = await bucket.head(key);
+    if (!head) return notFound(notFoundMsg);
+    if (etagMatches(ifNoneMatch, head.httpEtag)) {
+      return notModified(head.httpEtag);
+    }
+    const obj = await bucket.get(key);
+    if (!obj) return notFound(notFoundMsg);
+    return jsonResponse(obj, today);
+  }
+
+  const obj = await bucket.get(key);
+  if (!obj) return notFound(notFoundMsg);
+  return jsonResponse(obj, today);
 }
 
 export default {
@@ -169,57 +279,43 @@ export default {
     // GET /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip);
-      if (!result) return notFound("No image for today");
-      return imageResponse(result.obj, result.contentType, true);
+      return serveImage(request, env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip, true, "No image for today");
     }
 
     // GET /api/today.json → metadata
     if (path === "/api/today.json") {
       const today = await getToday(env.BUCKET);
-      const obj = await env.BUCKET.get(`metadata/${datePath(today)}.json`);
-      if (!obj) return notFound("No metadata for today");
-      return jsonResponse(obj, true);
+      return serveJson(request, env.BUCKET, `metadata/${datePath(today)}.json`, true, "No metadata for today");
     }
 
     // GET /api/today.manifest.json → responsive manifest
     if (path === "/api/today.manifest.json") {
       const today = await getToday(env.BUCKET);
-      const obj = await env.BUCKET.get(`manifests/${datePath(today)}.json`);
-      if (!obj) return notFound("No manifest for today");
-      return jsonResponse(obj, true);
+      return serveJson(request, env.BUCKET, `manifests/${datePath(today)}.json`, true, "No manifest for today");
     }
 
     // GET /api/:date.manifest.json → responsive manifest for date
     const manifestMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.manifest\.json$/);
     if (manifestMatch) {
-      const obj = await env.BUCKET.get(`manifests/${datePath(manifestMatch[1])}.json`);
-      if (!obj) return notFound(`No manifest for ${manifestMatch[1]}`);
-      return jsonResponse(obj);
+      return serveJson(request, env.BUCKET, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`);
     }
 
     // GET /api/:date.json → metadata for date
     const jsonMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.json$/);
     if (jsonMatch) {
-      const obj = await env.BUCKET.get(`metadata/${datePath(jsonMatch[1])}.json`);
-      if (!obj) return notFound(`No metadata for ${jsonMatch[1]}`);
-      return jsonResponse(obj);
+      return serveJson(request, env.BUCKET, `metadata/${datePath(jsonMatch[1])}.json`, false, `No metadata for ${jsonMatch[1]}`);
     }
 
     // GET /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      const result = await getImageObject(env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip);
-      if (!result) return notFound(`No original for ${origMatch[1]}`);
-      return imageResponse(result.obj, result.contentType);
+      return serveImage(request, env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip, false, `No original for ${origMatch[1]}`);
     }
 
     // GET /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      const result = await getImageObject(env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip);
-      if (!result) return notFound(`No image for ${dateMatch[1]}`);
-      return imageResponse(result.obj, result.contentType);
+      return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`);
     }
 
     return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");
