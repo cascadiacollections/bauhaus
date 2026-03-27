@@ -68,5 +68,54 @@
     "artist": "Paul Gauguin",
     "year": "1891",
     "source_url": "https://www.metmuseum.org/art/collection/search/438821"
+  },
+  {
+    "filename": "kandinsky-composition.jpg",
+    "title": "Composition VIII (Komposition VIII)",
+    "artist": "Wassily Kandinsky",
+    "year": "1923",
+    "source_url": "https://www.metmuseum.org/art/collection/search/489624"
+  },
+  {
+    "filename": "hassam-allies-day.jpg",
+    "title": "Allies Day, May 1917",
+    "artist": "Childe Hassam",
+    "year": "1917",
+    "source_url": "https://www.metmuseum.org/art/collection/search/14993"
+  },
+  {
+    "filename": "renoir-near-the-lake.jpg",
+    "title": "Near the Lake",
+    "artist": "Pierre-Auguste Renoir",
+    "year": "c. 1879–80",
+    "source_url": "https://www.artic.edu/artworks/16487/near-the-lake"
+  },
+  {
+    "filename": "munch-two-women.jpg",
+    "title": "Two Women on the Shore",
+    "artist": "Edvard Munch",
+    "year": "1898",
+    "source_url": "https://www.artic.edu/artworks/30820/two-women-on-the-shore"
+  },
+  {
+    "filename": "pissarro-boulevard-montmartre.jpg",
+    "title": "The Boulevard Montmartre on a Winter Morning",
+    "artist": "Camille Pissarro",
+    "year": "1897",
+    "source_url": "https://www.metmuseum.org/art/collection/search/437069"
+  },
+  {
+    "filename": "homer-northeaster.jpg",
+    "title": "Northeaster",
+    "artist": "Winslow Homer",
+    "year": "1895",
+    "source_url": "https://www.metmuseum.org/art/collection/search/11154"
+  },
+  {
+    "filename": "cassatt-childs-bath.jpg",
+    "title": "The Child's Bath",
+    "artist": "Mary Cassatt",
+    "year": "1893",
+    "source_url": "https://www.artic.edu/artworks/111442/the-childs-bath"
   }
 ]
