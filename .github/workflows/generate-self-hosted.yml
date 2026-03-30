@@ -37,6 +37,15 @@ jobs:
       - name: Download models (cached on disk)
         run: python models/download_models.py
 
+      - name: Import GPG key
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          echo "GPG key imported."
+
       - name: Generate and upload
         run: uv run python src/main.py --source unsplash
         env:
@@ -47,6 +56,8 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''

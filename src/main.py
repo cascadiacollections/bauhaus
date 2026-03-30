@@ -16,6 +16,7 @@ from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
 from fetch import fetch_artwork
 from postprocess import postprocess
 from quality import score_image
+from sign_metadata import sign_metadata
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 from variants import generate_variants
@@ -460,6 +461,18 @@ def main():
     w, h = stylized.size
     manifest = build_manifest(metadata, w, h, len(stylized_bytes), variants, today_str)
 
+    # Sign metadata with PGP key (optional — skipped when GPG is not configured)
+    metadata_sig: bytes | None = None
+    gpg_key_id = os.environ.get("GPG_KEY_ID")
+    gpg_passphrase = os.environ.get("GPG_PASSPHRASE")
+    if gpg_key_id or gpg_passphrase:
+        print("Signing metadata with PGP key...")
+        metadata_sig = sign_metadata(metadata, key_id=gpg_key_id, passphrase=gpg_passphrase)
+        if metadata_sig:
+            print("  Metadata signed successfully.")
+        else:
+            print("  ⚠ Metadata signing skipped or failed — continuing without signature.")
+
     if args.dry_run:
         # Save locally
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -488,6 +501,11 @@ def main():
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
             stripped_path.write_bytes(stripped_bytes)
             print(f"  Stripped:  {stripped_path}")
+
+        if metadata_sig:
+            sig_path = OUTPUT_DIR / "metadata.json.sig"
+            sig_path.write_bytes(metadata_sig)
+            print(f"  Signature: {sig_path}")
         return
 
     # 7. Upload to R2
@@ -498,6 +516,7 @@ def main():
         today=today,
         variants=variants,
         stripped_bytes=stripped_bytes,
+        metadata_sig=metadata_sig,
     )
     print("Uploaded:")
     for name, key in keys.items():
