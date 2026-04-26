@@ -593,8 +593,24 @@ describe("POST /api/vitals", () => {
     expect(call.blobs[2]).toBe("navigate");
     expect(call.blobs[3]).toBe("kevintcoughlin.com");
     expect(call.blobs[4]).toBe("/");
+    expect(call.blobs[5]).toBe("desktop");
     expect(call.doubles[0]).toBe(1234);
     expect(call.indexes[0]).toBe("kevintcoughlin.com");
+  });
+
+  it("classifies mobile User-Agent as 'mobile' in blobs", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "content-type": "application/json",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+      },
+      body: VITALS_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_VITALS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[5]).toBe("mobile");
   });
 });
 
@@ -668,8 +684,24 @@ describe("POST /api/err", () => {
     expect(call.blobs[1]).toBe("https://kevintcoughlin.com/bauhaus.js");
     expect(call.blobs[2]).toBe("kevintcoughlin.com");
     expect(call.blobs[3]).toBe("/bauhaus.js");
+    expect(call.blobs[4]).toBe("desktop");
     expect(call.doubles[0]).toBe(42);
     expect(call.doubles[1]).toBe(7);
     expect(call.indexes[0]).toBe("kevintcoughlin.com");
+  });
+
+  it("classifies mobile User-Agent as 'mobile' in blobs", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "content-type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
+      },
+      body: ERR_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_ERRORS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[4]).toBe("mobile");
   });
 });

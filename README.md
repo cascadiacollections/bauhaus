@@ -147,7 +147,7 @@ Wire format:
 
 `stack` is optional and truncated to 1 KB by the client before sending. Persisted to the `web_errors` Analytics Engine dataset.
 
-### Behaviour
+### Behavior
 
 | Condition | Response |
 |-----------|----------|
