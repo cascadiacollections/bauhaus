@@ -173,17 +173,29 @@ const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable"
 /** Cache-control for /api/today* — short-lived since it resolves to a new date each day. */
 const TODAY_CACHE = "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800";
 
-function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
-  const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
+/** Builds the shared response headers for image endpoints. */
+function buildImageHeaders(
+  key: string,
+  httpEtag: string | undefined,
+  httpMetadata: R2HTTPMetadata | undefined,
+  contentType: string,
+  today: boolean,
+): Record<string, string> {
+  const variant = key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   const headers: Record<string, string> = {
     "Content-Type": contentType,
-    "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
+    "Cache-Control": today ? TODAY_CACHE : (httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
     "Vary": "Accept",
     "X-Variant": variant,
     "Accept-CH": "DPR, Width, Viewport-Width",
     ...corsHeaders(),
   };
-  if (obj.httpEtag) headers["ETag"] = obj.httpEtag;
+  if (httpEtag) headers["ETag"] = httpEtag;
+  return headers;
+}
+
+function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
+  const headers = buildImageHeaders(obj.key ?? "", obj.httpEtag, obj.httpMetadata, contentType, today);
   return new Response(obj.body, { headers });
 }
 
@@ -236,16 +248,13 @@ async function serveImage(
       return notModified(headResult.head.httpEtag);
     }
     if (isHead) {
-      const variant = headResult.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
-      const headers: Record<string, string> = {
-        "Content-Type": headResult.contentType,
-        "Cache-Control": today ? TODAY_CACHE : (headResult.head.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
-        "Vary": "Accept",
-        "X-Variant": variant,
-        "Accept-CH": "DPR, Width, Viewport-Width",
-        ...corsHeaders(),
-      };
-      if (headResult.head.httpEtag) headers["ETag"] = headResult.head.httpEtag;
+      const headers = buildImageHeaders(
+        headResult.key,
+        headResult.head.httpEtag,
+        headResult.head.httpMetadata,
+        headResult.contentType,
+        today,
+      );
       return new Response(null, { status: 200, headers });
     }
     // ETag doesn't match — fetch the full object using the already-resolved key
