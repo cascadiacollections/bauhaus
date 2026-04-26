@@ -88,6 +88,44 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
 
+All `GET` endpoints also support `HEAD` — returns the same response headers (including `Content-Type`, `ETag`, and `Cache-Control`) with no body. This enables browser `<link rel="preload">` validation and CDN cache priming.
+
+### Cache-Control
+
+| Endpoint pattern | `Cache-Control` |
+|-----------------|----------------|
+| `/api/today*` | `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; CDN edge holds it for up to one day |
+| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — date-specific content never changes |
+
+### Responsive image consumer snippet
+
+Use the manifest endpoint or content-negotiation directly with a `<picture>` element for optimal LCP performance:
+
+```html
+<picture>
+  <source type="image/avif" srcset="https://bauhaus.cascadiacollections.workers.dev/api/today">
+  <source type="image/webp" srcset="https://bauhaus.cascadiacollections.workers.dev/api/today">
+  <img
+    src="https://bauhaus.cascadiacollections.workers.dev/api/today"
+    alt="Daily stylized art"
+    fetchpriority="high"
+    loading="eager"
+  >
+</picture>
+```
+
+For preload hints in `<head>`:
+
+```html
+<link
+  rel="preload"
+  as="image"
+  href="https://bauhaus.cascadiacollections.workers.dev/api/today"
+  imagesrcset="https://bauhaus.cascadiacollections.workers.dev/api/today"
+  type="image/avif"
+>
+```
+
 ### Image format negotiation
 
 Image endpoints (`/api/today`, `/api/YYYY-MM-DD`) support automatic format selection.
