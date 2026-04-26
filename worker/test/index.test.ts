@@ -444,3 +444,137 @@ describe("ETag and conditional requests", () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// HEAD method support
+// ---------------------------------------------------------------------------
+
+describe("HEAD method support", () => {
+  const DATE = "2025-06-15";
+  const DATE_PATH = "2025/06/15";
+  const IMAGE_ETAG = '"abc123"';
+  const META_ETAG = '"meta-etag"';
+  const MANIFEST_ETAG = '"manifest-etag"';
+
+  let bucket: R2Bucket;
+  let env: { BUCKET: R2Bucket };
+
+  beforeEach(() => {
+    bucket = makeBucket({
+      "latest.json": fakeR2Body({ date: DATE }),
+      [`stylized/${DATE_PATH}.jpg`]: fakeR2Body("jpeg-bytes", "image/jpeg", IMAGE_ETAG),
+      [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"'),
+      [`originals/${DATE_PATH}.jpg`]: fakeR2Body("orig-jpeg", "image/jpeg", '"orig-etag"'),
+      [`metadata/${DATE_PATH}.json`]: fakeR2Body({ title: "test" }, "application/json", META_ETAG),
+      [`manifests/${DATE_PATH}.json`]: fakeR2Body({ variants: [] }, "application/json", MANIFEST_ETAG),
+    });
+    env = { BUCKET: bucket };
+  });
+
+  it("HEAD /api/today returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/today returns same Content-Type as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("Content-Type")).toBe(get.headers.get("Content-Type"));
+  });
+
+  it("HEAD /api/today returns same Cache-Control as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("Cache-Control")).toBe(get.headers.get("Cache-Control"));
+  });
+
+  it("HEAD /api/today returns same ETag as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("ETag")).toBe(get.headers.get("ETag"));
+  });
+
+  it("HEAD /api/today returns Vary: Accept", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("HEAD /api/today respects Accept header for Content-Type negotiation", async () => {
+    const res = await worker.fetch(
+      makeRequest("/api/today", { method: "HEAD", accept: "image/avif,*/*" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/avif");
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/:date returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/:date/original returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}/original`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/today.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today.json", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/today.manifest.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today.manifest.json", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/:date.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}.json`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/:date.manifest.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}.manifest.json`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD uses head() and never get() for image data", async () => {
+    await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    const imageKey = `stylized/${DATE_PATH}.jpg`;
+    const getCalls: string[] = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: [string]) => c[0],
+    );
+    const headCalls: string[] = (bucket.head as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: [string]) => c[0],
+    );
+    expect(headCalls).toContain(imageKey);
+    expect(getCalls.filter((k) => k !== "latest.json")).not.toContain(imageKey);
+  });
+
+  it("HEAD returns 404 when resource is missing", async () => {
+    const emptyBucket = makeBucket({ "latest.json": fakeR2Body({ date: DATE }) });
+    const res = await worker.fetch(
+      makeRequest(`/api/${DATE}`, { method: "HEAD" }),
+      { BUCKET: emptyBucket },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("HEAD /api/today returns Accept-CH header", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.headers.get("Accept-CH")).toBe("DPR, Width, Viewport-Width");
+  });
+
+});

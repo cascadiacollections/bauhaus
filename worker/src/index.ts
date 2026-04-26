@@ -2,13 +2,13 @@
  * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork from R2.
  *
  * Routes:
- *   GET /api/today               → today's stylized image
- *   GET /api/today.json          → today's metadata
- *   GET /api/today.manifest.json → today's responsive manifest
- *   GET /api/:date               → stylized image for YYYY-MM-DD
- *   GET /api/:date/original      → original unstylized image
- *   GET /api/:date.json          → metadata for date
- *   GET /api/:date.manifest.json → responsive manifest for date
+ *   GET|HEAD /api/today               → today's stylized image
+ *   GET|HEAD /api/today.json          → today's metadata
+ *   GET|HEAD /api/today.manifest.json → today's responsive manifest
+ *   GET|HEAD /api/:date               → stylized image for YYYY-MM-DD
+ *   GET|HEAD /api/:date/original      → original unstylized image
+ *   GET|HEAD /api/:date.json          → metadata for date
+ *   GET|HEAD /api/:date.manifest.json → responsive manifest for date
  *
  * Format negotiation:
  *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
@@ -76,7 +76,7 @@ function isStrip(url: URL): boolean {
 function corsHeaders(): HeadersInit {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
   };
 }
 
@@ -171,18 +171,31 @@ function etagMatches(ifNoneMatch: string, httpEtag: string): boolean {
 const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable";
 
 /** Cache-control for /api/today* — short-lived since it resolves to a new date each day. */
-const TODAY_CACHE = "public, max-age=300, s-maxage=300, stale-while-revalidate=60";
+const TODAY_CACHE = "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800";
 
-function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
-  const variant = obj.key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
+/** Builds the shared response headers for image endpoints. */
+function buildImageHeaders(
+  key: string,
+  httpEtag: string | undefined,
+  httpMetadata: R2HTTPMetadata | undefined,
+  contentType: string,
+  today: boolean,
+): Record<string, string> {
+  const variant = key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
   const headers: Record<string, string> = {
     "Content-Type": contentType,
-    "Cache-Control": today ? TODAY_CACHE : (obj.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
+    "Cache-Control": today ? TODAY_CACHE : (httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
     "Vary": "Accept",
     "X-Variant": variant,
+    "Accept-CH": "DPR, Width, Viewport-Width",
     ...corsHeaders(),
   };
-  if (obj.httpEtag) headers["ETag"] = obj.httpEtag;
+  if (httpEtag) headers["ETag"] = httpEtag;
+  return headers;
+}
+
+function imageResponse(obj: R2ObjectBody, contentType: string, today = false): Response {
+  const headers = buildImageHeaders(obj.key ?? "", obj.httpEtag, obj.httpMetadata, contentType, today);
   return new Response(obj.body, { headers });
 }
 
@@ -213,6 +226,7 @@ function notFound(msg: string): Response {
 /**
  * Serves an image response, using R2 head() for If-None-Match checks to avoid
  * reading the full object body when a 304 Not Modified response is appropriate.
+ * When isHead is true, returns the same headers as GET but without a body.
  */
 async function serveImage(
   request: Request,
@@ -223,13 +237,25 @@ async function serveImage(
   strip: boolean,
   today: boolean,
   notFoundMsg: string,
+  isHead = false,
 ): Promise<Response> {
   const ifNoneMatch = request.headers.get("If-None-Match");
-  if (ifNoneMatch) {
+
+  if (isHead || ifNoneMatch) {
     const headResult = await headImageObject(bucket, basePath, format, progressive, strip);
     if (!headResult) return notFound(notFoundMsg);
-    if (etagMatches(ifNoneMatch, headResult.head.httpEtag)) {
+    if (ifNoneMatch && etagMatches(ifNoneMatch, headResult.head.httpEtag)) {
       return notModified(headResult.head.httpEtag);
+    }
+    if (isHead) {
+      const headers = buildImageHeaders(
+        headResult.key,
+        headResult.head.httpEtag,
+        headResult.head.httpMetadata,
+        headResult.contentType,
+        today,
+      );
+      return new Response(null, { status: 200, headers });
     }
     // ETag doesn't match — fetch the full object using the already-resolved key
     const obj = await bucket.get(headResult.key);
@@ -245,6 +271,7 @@ async function serveImage(
 /**
  * Serves a JSON response, using R2 head() for If-None-Match checks to avoid
  * reading the full object body when a 304 Not Modified response is appropriate.
+ * When isHead is true, returns the same headers as GET but without a body.
  */
 async function serveJson(
   request: Request,
@@ -252,13 +279,24 @@ async function serveJson(
   key: string,
   today: boolean,
   notFoundMsg: string,
+  isHead = false,
 ): Promise<Response> {
   const ifNoneMatch = request.headers.get("If-None-Match");
-  if (ifNoneMatch) {
+
+  if (isHead || ifNoneMatch) {
     const head = await bucket.head(key);
     if (!head) return notFound(notFoundMsg);
-    if (etagMatches(ifNoneMatch, head.httpEtag)) {
+    if (ifNoneMatch && etagMatches(ifNoneMatch, head.httpEtag)) {
       return notModified(head.httpEtag);
+    }
+    if (isHead) {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Cache-Control": today ? TODAY_CACHE : (head.httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
+        ...corsHeaders(),
+      };
+      if (head.httpEtag) headers["ETag"] = head.httpEtag;
+      return new Response(null, { status: 200, headers });
     }
     const obj = await bucket.get(key);
     if (!obj) return notFound(notFoundMsg);
@@ -281,52 +319,54 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders() });
     }
 
-    if (request.method !== "GET") {
+    const isHead = request.method === "HEAD";
+
+    if (request.method !== "GET" && !isHead) {
       return new Response("Method not allowed", { status: 405 });
     }
 
     const format = negotiateFormat(request, url);
 
-    // GET /api/today → stylized image
+    // GET|HEAD /api/today → stylized image
     if (path === "/api/today") {
       const today = await getToday(env.BUCKET);
-      return serveImage(request, env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip, true, "No image for today");
+      return serveImage(request, env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip, true, "No image for today", isHead);
     }
 
-    // GET /api/today.json → metadata
+    // GET|HEAD /api/today.json → metadata
     if (path === "/api/today.json") {
       const today = await getToday(env.BUCKET);
-      return serveJson(request, env.BUCKET, `metadata/${datePath(today)}.json`, true, "No metadata for today");
+      return serveJson(request, env.BUCKET, `metadata/${datePath(today)}.json`, true, "No metadata for today", isHead);
     }
 
-    // GET /api/today.manifest.json → responsive manifest
+    // GET|HEAD /api/today.manifest.json → responsive manifest
     if (path === "/api/today.manifest.json") {
       const today = await getToday(env.BUCKET);
-      return serveJson(request, env.BUCKET, `manifests/${datePath(today)}.json`, true, "No manifest for today");
+      return serveJson(request, env.BUCKET, `manifests/${datePath(today)}.json`, true, "No manifest for today", isHead);
     }
 
-    // GET /api/:date.manifest.json → responsive manifest for date
+    // GET|HEAD /api/:date.manifest.json → responsive manifest for date
     const manifestMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.manifest\.json$/);
     if (manifestMatch) {
-      return serveJson(request, env.BUCKET, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`);
+      return serveJson(request, env.BUCKET, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`, isHead);
     }
 
-    // GET /api/:date.json → metadata for date
+    // GET|HEAD /api/:date.json → metadata for date
     const jsonMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.json$/);
     if (jsonMatch) {
-      return serveJson(request, env.BUCKET, `metadata/${datePath(jsonMatch[1])}.json`, false, `No metadata for ${jsonMatch[1]}`);
+      return serveJson(request, env.BUCKET, `metadata/${datePath(jsonMatch[1])}.json`, false, `No metadata for ${jsonMatch[1]}`, isHead);
     }
 
-    // GET /api/:date/original → original image
+    // GET|HEAD /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      return serveImage(request, env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip, false, `No original for ${origMatch[1]}`);
+      return serveImage(request, env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip, false, `No original for ${origMatch[1]}`, isHead);
     }
 
-    // GET /api/:date → stylized image for date
+    // GET|HEAD /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`);
+      return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`, isHead);
     }
 
     return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");
