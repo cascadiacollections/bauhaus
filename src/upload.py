@@ -33,6 +33,7 @@ def upload(
     today: date | None = None,
     variants: dict[str, bytes] | None = None,
     stripped_bytes: bytes | None = None,
+    metadata_sig: bytes | None = None,
 ) -> dict[str, str]:
     """Upload original, stylized, variants, manifest, and metadata to R2. Returns dict of uploaded keys."""
     bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
@@ -95,6 +96,18 @@ def upload(
         CacheControl="public, max-age=31536000, immutable",
     )
     keys["metadata"] = key
+
+    # Metadata signature (detached GPG signature for the metadata JSON)
+    if metadata_sig is not None:
+        key = f"metadata/{date_path}.json.sig"
+        client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=metadata_sig,
+            ContentType="application/pgp-signature",
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        keys["metadata_sig"] = key
 
     # Manifest JSON (responsive variants)
     if manifest is not None:
