@@ -87,6 +87,8 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
+| `POST /api/vitals` | Ingest Web Vitals RUM (Analytics Engine) |
+| `POST /api/err` | Ingest JS error RUM (Analytics Engine) |
 
 ### Image format negotiation
 
@@ -109,6 +111,59 @@ The Worker uses `Accept` header content negotiation for the base image endpoints
 | Parameter | Description |
 |-----------|-------------|
 | `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
+
+## Telemetry
+
+Two first-party RUM endpoints persist to [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/). Only requests from allowed origins (configured via `ALLOWED_ORIGINS`) are accepted. The Beacon API is used on the client side — both endpoints only accept `POST`.
+
+### `POST /api/vitals` — Web Vitals
+
+Wire format:
+```json
+{
+  "name": "LCP",
+  "value": 1234.5,
+  "id": "v3-1234567890-1234",
+  "rating": "good",
+  "navigationType": "navigate",
+  "url": "https://kevintcoughlin.com/"
+}
+```
+
+`name` accepts `LCP`, `INP`, `CLS`, `FCP`, or `TTFB`. `rating` is `good`, `needs-improvement`, or `poor`. Persisted to the `web_vitals` Analytics Engine dataset.
+
+### `POST /api/err` — JS Errors
+
+Wire format:
+```json
+{
+  "message": "Uncaught TypeError: ...",
+  "source": "https://kevintcoughlin.com/bauhaus.js",
+  "lineno": 42,
+  "colno": 7,
+  "stack": "..."
+}
+```
+
+`stack` is optional and truncated to 1 KB by the client before sending. Persisted to the `web_errors` Analytics Engine dataset.
+
+### Behaviour
+
+| Condition | Response |
+|-----------|----------|
+| Allowed origin, valid body | `204 No Content` |
+| Disallowed or missing `Origin` | `403 Forbidden` |
+| Non-POST method | `405 Method Not Allowed` |
+| Body > 4 KB | `413 Payload Too Large` |
+| `OPTIONS` preflight (allowed origin) | `204` with CORS headers |
+
+CORS response includes `Access-Control-Allow-Origin: <echoed>`, `Access-Control-Allow-Methods: POST`, `Access-Control-Allow-Headers: content-type`.
+
+Query stored data via the Cloudflare dashboard SQL editor or:
+```bash
+wrangler analytics-engine sql 'SELECT * FROM web_vitals LIMIT 10'
+wrangler analytics-engine sql 'SELECT * FROM web_errors LIMIT 10'
+```
 
 ## Local development
 

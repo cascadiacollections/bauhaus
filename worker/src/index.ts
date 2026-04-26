@@ -2,13 +2,15 @@
  * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork from R2.
  *
  * Routes:
- *   GET /api/today               → today's stylized image
- *   GET /api/today.json          → today's metadata
- *   GET /api/today.manifest.json → today's responsive manifest
- *   GET /api/:date               → stylized image for YYYY-MM-DD
- *   GET /api/:date/original      → original unstylized image
- *   GET /api/:date.json          → metadata for date
- *   GET /api/:date.manifest.json → responsive manifest for date
+ *   GET  /api/today               → today's stylized image
+ *   GET  /api/today.json          → today's metadata
+ *   GET  /api/today.manifest.json → today's responsive manifest
+ *   GET  /api/:date               → stylized image for YYYY-MM-DD
+ *   GET  /api/:date/original      → original unstylized image
+ *   GET  /api/:date.json          → metadata for date
+ *   GET  /api/:date.manifest.json → responsive manifest for date
+ *   POST /api/vitals              → ingest Web Vitals RUM (Analytics Engine)
+ *   POST /api/err                 → ingest JS error RUM (Analytics Engine)
  *
  * Format negotiation:
  *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
@@ -22,6 +24,9 @@
 
 interface Env {
   BUCKET: R2Bucket;
+  WEB_VITALS: AnalyticsEngineDataset;
+  WEB_ERRORS: AnalyticsEngineDataset;
+  ALLOWED_ORIGINS: string;
 }
 
 /** Supported image formats in negotiation priority order: AVIF > WebP > JPEG. */
@@ -78,6 +83,145 @@ function corsHeaders(): HeadersInit {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
   };
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry helpers
+// ---------------------------------------------------------------------------
+
+const TELEMETRY_BODY_LIMIT = 4096;
+const TELEMETRY_ORIGINS_DEFAULT =
+  "https://kevintcoughlin.com,https://www.kevintcoughlin.com";
+
+function getAllowedOrigins(env: Env): Set<string> {
+  const raw = env.ALLOWED_ORIGINS ?? TELEMETRY_ORIGINS_DEFAULT;
+  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+}
+
+function telemetryCorsHeaders(origin: string): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "POST",
+    "Access-Control-Allow-Headers": "content-type",
+  };
+}
+
+function classifyUA(ua: string): "mobile" | "desktop" {
+  return /Mobile|Android|iPhone|iPad/i.test(ua) ? "mobile" : "desktop";
+}
+
+async function handleTelemetry(
+  request: Request,
+  env: Env,
+  path: string,
+): Promise<Response> {
+  const origin = request.headers.get("Origin") ?? "";
+  const allowedOrigins = getAllowedOrigins(env);
+
+  // Handle OPTIONS preflight
+  if (request.method === "OPTIONS") {
+    if (!allowedOrigins.has(origin)) {
+      return new Response(null, { status: 403 });
+    }
+    return new Response(null, {
+      status: 204,
+      headers: telemetryCorsHeaders(origin),
+    });
+  }
+
+  // Only POST accepted
+  if (request.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  // Validate origin
+  if (!allowedOrigins.has(origin)) {
+    return new Response("Forbidden", { status: 403 });
+  }
+
+  // Reject oversized requests early via Content-Length
+  const contentLength = parseInt(request.headers.get("content-length") ?? "0", 10);
+  if (contentLength > TELEMETRY_BODY_LIMIT) {
+    return new Response("Payload Too Large", {
+      status: 413,
+      headers: telemetryCorsHeaders(origin),
+    });
+  }
+
+  // Read and size-check the body
+  const body = await request.text();
+  if (body.length > TELEMETRY_BODY_LIMIT) {
+    return new Response("Payload Too Large", {
+      status: 413,
+      headers: telemetryCorsHeaders(origin),
+    });
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = JSON.parse(body);
+  } catch {
+    return new Response("Bad Request", {
+      status: 400,
+      headers: telemetryCorsHeaders(origin),
+    });
+  }
+
+  const ua = request.headers.get("User-Agent") ?? "";
+  const uaClass = classifyUA(ua);
+
+  if (path === "/api/vitals") {
+    let host = "";
+    let urlPath = "";
+    try {
+      const pageUrl = new URL(String(data.url ?? ""));
+      host = pageUrl.hostname;
+      urlPath = pageUrl.pathname;
+    } catch {
+      // malformed URL — store empty strings
+    }
+
+    env.WEB_VITALS.writeDataPoint({
+      blobs: [
+        String(data.name ?? ""),
+        String(data.rating ?? ""),
+        String(data.navigationType ?? ""),
+        host,
+        urlPath,
+        uaClass,
+      ],
+      doubles: [Number(data.value ?? 0)],
+      indexes: [host],
+    });
+  } else {
+    // /api/err
+    let host = "";
+    let urlPath = "";
+    try {
+      const sourceUrl = new URL(String(data.source ?? ""));
+      host = sourceUrl.hostname;
+      urlPath = sourceUrl.pathname;
+    } catch {
+      // malformed URL — store empty strings
+    }
+
+    env.WEB_ERRORS.writeDataPoint({
+      blobs: [
+        String(data.message ?? ""),
+        String(data.source ?? ""),
+        host,
+        urlPath,
+        uaClass,
+      ],
+      doubles: [Number(data.lineno ?? 0), Number(data.colno ?? 0)],
+      indexes: [host],
+    });
+  }
+
+  return new Response(null, {
+    status: 204,
+    headers: telemetryCorsHeaders(origin),
+  });
 }
 
 async function getImageObject(
@@ -276,6 +420,11 @@ export default {
     const path = url.pathname;
     const progressive = isProgressive(url);
     const strip = isStrip(url);
+
+    // Telemetry endpoints — handled separately (POST only, origin-gated CORS)
+    if (path === "/api/vitals" || path === "/api/err") {
+      return handleTelemetry(request, env, path);
+    }
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders() });
