@@ -6,3 +6,14 @@ compatibility_flags = ["nodejs_compat"]
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "bauhaus"
+
+[[analytics_engine_datasets]]
+binding = "WEB_VITALS"
+dataset = "web_vitals"
+
+[[analytics_engine_datasets]]
+binding = "WEB_ERRORS"
+dataset = "web_errors"
+
+[vars]
+ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"
