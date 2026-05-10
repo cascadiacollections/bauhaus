@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 cpu_ms = 1.25
 
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
 
 [[r2_buckets]]
