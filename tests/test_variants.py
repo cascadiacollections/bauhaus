@@ -49,7 +49,7 @@ class TestGenerateVariants:
         original_save = Image.Image.save
 
         def broken_save(self, fp, format=None, **kwargs):
-            if format in ("WebP", "AVIF"):
+            if format in ("WebP", "WEBP", "AVIF"):
                 raise OSError(f"{format} not supported")
             return original_save(self, fp, format=format, **kwargs)
 

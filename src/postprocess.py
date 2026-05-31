@@ -4,33 +4,35 @@ Applies color harmonization, sharpening, and optional super-resolution
 to improve quality after AdaIN style transfer.
 """
 
+from bisect import bisect_left
 from itertools import accumulate
 
 from PIL import Image, ImageFilter
 
 
-def _cumulative_sum(hist: list[int]) -> list[int]:
-    """Compute cumulative sum of a histogram."""
-    return list(accumulate(hist))
+
 
 
 def _build_histogram_lut(source_hist: list[int], reference_hist: list[int]) -> list[int]:
-    """Build a lookup table to match source histogram to reference histogram."""
-    src_cdf = _cumulative_sum(source_hist)
-    ref_cdf = _cumulative_sum(reference_hist)
+    """Build a lookup table to match source histogram to reference histogram.
+
+    Uses a binary search (O(n log n)) against the normalised reference CDF
+    instead of a linear scan (O(n²)).
+    """
+    src_cdf = list(accumulate(source_hist))
+    ref_cdf = list(accumulate(reference_hist))
 
     src_total = src_cdf[-1] or 1
     ref_total = ref_cdf[-1] or 1
 
+    # Normalise reference CDF once so bisect_left can be used per source value.
+    ref_cdf_norm = [v / ref_total for v in ref_cdf]
+
     lut: list[int] = []
     for src_val in range(256):
         target = src_cdf[src_val] / src_total
-        best = 255
-        for ref_val in range(256):
-            if ref_cdf[ref_val] / ref_total >= target:
-                best = ref_val
-                break
-        lut.append(best)
+        best = bisect_left(ref_cdf_norm, target)
+        lut.append(min(best, 255))
 
     return lut
 
@@ -58,7 +60,7 @@ def color_harmonize(
 
     # Resize content to match stylized dimensions for histogram comparison
     if content_rgb.size != stylized_rgb.size:
-        content_rgb = content_rgb.resize(stylized_rgb.size, Image.LANCZOS)
+        content_rgb = content_rgb.resize(stylized_rgb.size, Image.Resampling.LANCZOS)
 
     # Per-channel histogram matching
     s_channels = stylized_rgb.split()
@@ -121,12 +123,12 @@ def upscale(image: Image.Image, scale: int = 2) -> Image.Image:
 
     # Fallback: high-quality LANCZOS upscale
     w, h = image.size
-    return image.resize((w * scale, h * scale), Image.LANCZOS)
+    return image.resize((w * scale, h * scale), Image.Resampling.LANCZOS)
 
 
 def _upscale_realesrgan(image: Image.Image, scale: int) -> Image.Image:
     """Upscale using Real-ESRGAN model (requires ``realesrgan`` package)."""
-    import numpy as np  # noqa: F811 - lazy import
+    import numpy as np  # lazy import — realesrgan is an optional dependency
     from basicsr.archs.rrdbnet_arch import RRDBNet  # type: ignore[import-untyped]
     from realesrgan import RealESRGANer  # type: ignore[import-untyped]
 

@@ -4,7 +4,6 @@ from PIL import Image
 
 from postprocess import (
     _build_histogram_lut,
-    _cumulative_sum,
     color_harmonize,
     postprocess,
     sharpen,
@@ -28,22 +27,6 @@ def _gradient_image(size: tuple[int, int] = (256, 64)) -> Image.Image:
         for y in range(h):
             pixels[x, y] = (x % 256, 128, 128)
     return img
-
-
-# --- _cumulative_sum ---
-
-class TestCumulativeSum:
-    def test_simple(self):
-        assert _cumulative_sum([1, 2, 3]) == [1, 3, 6]
-
-    def test_empty(self):
-        assert _cumulative_sum([]) == []
-
-    def test_single(self):
-        assert _cumulative_sum([5]) == [5]
-
-    def test_zeros(self):
-        assert _cumulative_sum([0, 0, 0]) == [0, 0, 0]
 
 
 # --- _build_histogram_lut ---

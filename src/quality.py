@@ -1,9 +1,10 @@
 """Image quality scoring for source filtering.
 
-Lightweight quality metrics evaluated on CPU using Pillow only.
+Lightweight quality metrics evaluated on CPU using Pillow and NumPy.
 Used to reject low-quality source images before style transfer.
 """
 
+import numpy as np
 from PIL import Image, ImageFilter
 
 # Minimum acceptable image dimensions (width or height).
@@ -44,14 +45,10 @@ def sharpness_score(image: Image.Image) -> float:
     if ew > 4 and eh > 4:
         edges = edges.crop((2, 2, ew - 2, eh - 2))
 
-    pixels = list(edges.getdata())
-    n = len(pixels)
-    if n == 0:
+    arr = np.asarray(edges, dtype=np.float32)
+    if arr.size == 0:
         return 0.0
-
-    mean = sum(pixels) / n
-    variance = sum((p - mean) ** 2 for p in pixels) / n
-    return variance
+    return float(arr.var())
 
 
 def check_resolution(image: Image.Image, min_dim: int = MIN_DIMENSION) -> bool:

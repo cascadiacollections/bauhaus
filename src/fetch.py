@@ -4,6 +4,7 @@ import os
 import random
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, asdict
 from io import BytesIO
 
@@ -92,11 +93,11 @@ def is_landscape(title: str) -> bool:
 USER_AGENT = "Bauhaus/0.1 (https://github.com/cascadiacollections/bauhaus; CC0 art service)"
 
 _session = requests.Session()
-_session.headers["User-Agent"] = USER_AGENT
+_session.headers.update({"User-Agent": USER_AGENT})
 
 
-def _get(url: str, timeout: int = 30) -> requests.Response:
-    resp = _session.get(url, timeout=timeout)
+def _get(url: str, timeout: int = 30, headers: dict | None = None, params: dict | None = None) -> requests.Response:
+    resp = _session.get(url, timeout=timeout, headers=headers, params=params)
     resp.raise_for_status()
     return resp
 
@@ -250,13 +251,16 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
     access_key = os.environ["UNSPLASH_ACCESS_KEY"]
     for attempt in range(MAX_ATTEMPTS):
         try:
-            resp = _session.get(
-                "https://api.unsplash.com/photos/random"
-                "?query=landscape&orientation=landscape",
+            params: dict = {}
+            if landscapes_only:
+                params["query"] = "landscape"
+                params["orientation"] = "landscape"
+            resp = _get(
+                "https://api.unsplash.com/photos/random",
                 headers={"Authorization": f"Client-ID {access_key}"},
                 timeout=15,
+                params=params,
             )
-            resp.raise_for_status()
             data = resp.json()
 
             description = (data.get("description") or "") + " " + (data.get("alt_description") or "")
@@ -294,6 +298,13 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
     raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
 
 
+_FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
+    "unsplash": fetch_unsplash,
+    "met": fetch_met,
+    "artic": fetch_artic,
+}
+
+
 def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch artwork from the specified source.
 
@@ -304,12 +315,7 @@ def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, qualit
         quality_gate: When True (default), reject images that fail resolution,
                       aspect ratio, or sharpness checks during fetching.
     """
-    fetchers = {
-        "unsplash": fetch_unsplash,
-        "met": fetch_met,
-        "artic": fetch_artic,
-    }
-    fetcher = fetchers.get(source)
+    fetcher = _FETCHERS.get(source)
     if not fetcher:
-        raise ValueError(f"Unknown source: {source}. Available: {', '.join(fetchers)}")
+        raise ValueError(f"Unknown source: {source}. Available: {', '.join(_FETCHERS)}")
     return fetcher(landscapes_only=landscapes_only, quality_gate=quality_gate)

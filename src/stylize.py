@@ -17,7 +17,9 @@ MODELS_DIR = Path(__file__).resolve().parent.parent / "models" / "weights"
 
 
 def _select_device() -> torch.device:
-    """Pick the best available compute device: MPS (Apple Silicon) → CPU."""
+    """Pick the best available compute device: CUDA → MPS (Apple Silicon) → CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
     if torch.backends.mps.is_available():
         return torch.device("mps")
     return torch.device("cpu")
@@ -104,9 +106,7 @@ def _adaptive_instance_norm(content_feat: torch.Tensor, style_feat: torch.Tensor
     return normalized * style_std.expand(size) + style_mean.expand(size)
 
 
-_to_tensor = transforms.Compose([
-    transforms.ToTensor(),
-])
+_to_tensor = transforms.ToTensor()
 
 
 def _load_image(img: Image.Image, max_size: int = 1920) -> torch.Tensor:
@@ -114,7 +114,7 @@ def _load_image(img: Image.Image, max_size: int = 1920) -> torch.Tensor:
     w, h = img.size
     scale = min(max_size / max(w, h), 1.0)
     if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
     return _to_tensor(img).unsqueeze(0)
 
 
@@ -237,5 +237,5 @@ class StyleTransfer:
 
         result = transforms.ToPILImage()(output)
         if result.size != (orig_w, orig_h):
-            result = result.resize((orig_w, orig_h), Image.LANCZOS)
+            result = result.resize((orig_w, orig_h), Image.Resampling.LANCZOS)
         return result
