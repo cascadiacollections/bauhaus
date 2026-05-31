@@ -4,6 +4,7 @@ import os
 import random
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, asdict
 from io import BytesIO
 
@@ -258,7 +259,7 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
                 "https://api.unsplash.com/photos/random",
                 headers={"Authorization": f"Client-ID {access_key}"},
                 timeout=15,
-                params=params or None,
+                params=params,
             )
             data = resp.json()
 
@@ -297,7 +298,7 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
     raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
 
 
-_FETCHERS: dict[str, callable] = {
+_FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
     "unsplash": fetch_unsplash,
     "met": fetch_met,
     "artic": fetch_artic,
