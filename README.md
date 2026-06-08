@@ -220,6 +220,12 @@ just test
 # Generate locally (no R2 upload)
 just generate
 
+# Generate benchmark metrics for parity tracking
+just benchmark-generate --max-size 1536
+
+# Enforce local benchmark thresholds
+just benchmark-gate
+
 # Options (extra args forwarded to src/main.py)
 just generate --source unsplash   # Unsplash landscape (default)
 just generate --source met        # Metropolitan Museum

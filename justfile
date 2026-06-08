@@ -29,6 +29,14 @@ check:
 generate *ARGS:
     uv run python src/main.py --dry-run {{ ARGS }}
 
+# Run a reproducible generation benchmark and write metrics JSON
+benchmark-generate *ARGS:
+    uv run python src/main.py --dry-run --source met --metrics-out output/benchmark/metrics.json {{ ARGS }}
+
+# Enforce benchmark thresholds against metrics JSON
+benchmark-gate metrics='output/benchmark/metrics.json' max_total='210' max_style_transfer='120':
+    uv run python src/benchmark_gate.py --metrics {{ metrics }} --max-total {{ max_total }} --max-style-transfer {{ max_style_transfer }}
+
 # Build Docker image
 docker-build:
     docker build -t bauhaus .

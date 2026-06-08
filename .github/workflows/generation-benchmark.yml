@@ -1,0 +1,130 @@
+name: Generation Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_self_hosted:
+        description: "Also run on self-hosted macOS ARM64 runner"
+        required: false
+        type: boolean
+        default: false
+      max_total_sec:
+        description: "Max allowed total runtime (seconds)"
+        required: false
+        type: number
+        default: 210
+      max_style_transfer_sec:
+        description: "Max allowed style transfer runtime (seconds)"
+        required: false
+        type: number
+        default: 120
+  schedule:
+    - cron: "30 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark-github-hosted:
+    name: Benchmark (github-hosted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      MAX_TOTAL_SEC: ${{ github.event_name == 'workflow_dispatch' && inputs.max_total_sec || 210 }}
+      MAX_STYLE_TRANSFER_SEC: ${{ github.event_name == 'workflow_dispatch' && inputs.max_style_transfer_sec || 120 }}
+      BENCHMARK_METRICS: output/benchmark/github-hosted.json
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - uses: actions/cache@v5
+        with:
+          path: models/weights
+          key: adain-models-v1
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Download models
+        run: python models/download_models.py
+
+      - name: Run benchmark (dry run)
+        run: |
+          uv run python src/main.py \
+            --dry-run \
+            --source met \
+            --max-size 1536 \
+            --metrics-label github-hosted \
+            --metrics-out "$BENCHMARK_METRICS"
+
+      - name: Enforce benchmark thresholds
+        run: |
+          uv run python src/benchmark_gate.py \
+            --metrics "$BENCHMARK_METRICS" \
+            --max-total "$MAX_TOTAL_SEC" \
+            --max-style-transfer "$MAX_STYLE_TRANSFER_SEC"
+
+      - name: Upload benchmark metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-github-hosted
+          path: output/benchmark/*.json
+
+  benchmark-self-hosted:
+    name: Benchmark (self-hosted macOS ARM64)
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_self_hosted }}
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+    env:
+      MAX_TOTAL_SEC: ${{ inputs.max_total_sec }}
+      MAX_STYLE_TRANSFER_SEC: ${{ inputs.max_style_transfer_sec }}
+      UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
+      BENCHMARK_METRICS: output/benchmark/self-hosted-macos-arm64.json
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Verify toolchain (mise)
+        run: |
+          command -v mise >/dev/null 2>&1 || { echo "::error::mise not found — install mise on runner"; exit 1; }
+          mise install --yes
+          echo "Python: $(python3 --version)"
+          echo "uv: $(uv --version)"
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Download models
+        run: python models/download_models.py
+
+      - name: Run benchmark (dry run)
+        run: |
+          uv run python src/main.py \
+            --dry-run \
+            --source met \
+            --max-size 1536 \
+            --metrics-label self-hosted-macos-arm64 \
+            --metrics-out "$BENCHMARK_METRICS"
+
+      - name: Enforce benchmark thresholds
+        run: |
+          uv run python src/benchmark_gate.py \
+            --metrics "$BENCHMARK_METRICS" \
+            --max-total "$MAX_TOTAL_SEC" \
+            --max-style-transfer "$MAX_STYLE_TRANSFER_SEC"
+
+      - name: Upload benchmark metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-self-hosted-macos-arm64
+          path: output/benchmark/*.json
