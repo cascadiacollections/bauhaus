@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner-dark.svg" alt="Bauhaus — Daily Stylized Art" width="640">
+  <img src="https://bauhaus.cascadiacollections.workers.dev/api/today?format=jpeg" alt="Today's Bauhaus daily art" width="640">
 </p>
 
 # Bauhaus
