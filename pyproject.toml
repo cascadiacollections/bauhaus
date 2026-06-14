@@ -9,7 +9,7 @@ dependencies = [
     "torch>=2.12.0,<3.0",
     "torchvision>=0.15,<1.0",
     "pillow>=12.1.1,<13.0",
-    "boto3>=1.28,<2.0",
+    "boto3>=1.43.29,<2.0",
     "requests>=2.31,<3.0",
 ]
 
