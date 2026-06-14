@@ -9,7 +9,7 @@ jobs:
   generate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -45,8 +45,9 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'
-          MEMORY_PROFILE: low-memory
-          MAX_SIZE: '1024'
+          MEMORY_PROFILE: balanced
+          MAX_SIZE: '1536'
+          GENERATE_VARIANTS: 'true'
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''
