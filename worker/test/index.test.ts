@@ -9,10 +9,12 @@ function fakeR2Body(
   data: string | object,
   contentType?: string,
   etag?: string,
+  key?: string,
 ): R2ObjectBody {
   const body =
     typeof data === "string" ? data : JSON.stringify(data);
   return {
+    key,
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(body));
@@ -304,6 +306,61 @@ describe("worker fetch handler", () => {
 // ETag and conditional requests (If-None-Match / 304 Not Modified)
 // ---------------------------------------------------------------------------
 
+describe("variant resolution fixtures", () => {
+  const DATE = "2025-06-15";
+  const DATE_PATH = "2025/06/15";
+
+  it.each([
+    {
+      name: "progressive=true prefers the progressive JPEG variant over AVIF negotiation",
+      path: `/api/${DATE}?format=avif&progressive=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.progressive.jpg`]: fakeR2Body("prog-bytes", "image/jpeg", '"prog-etag"', `stylized/${DATE_PATH}.progressive.jpg`),
+        [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"', `stylized/${DATE_PATH}.avif`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "progressive",
+    },
+    {
+      name: "strip=true prefers the stripped JPEG variant over AVIF negotiation",
+      path: `/api/${DATE}?format=avif&strip=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.stripped.jpg`]: fakeR2Body("strip-bytes", "image/jpeg", '"strip-etag"', `stylized/${DATE_PATH}.stripped.jpg`),
+        [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"', `stylized/${DATE_PATH}.avif`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "stripped",
+    },
+    {
+      name: "progressive=true falls back to baseline JPEG when the progressive variant is unavailable",
+      path: `/api/${DATE}?format=avif&progressive=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.jpg`]: fakeR2Body("jpeg-bytes", "image/jpeg", '"jpeg-etag"', `stylized/${DATE_PATH}.jpg`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "baseline",
+    },
+  ])("$name", async ({ path, accept, objects, expectedStatus, expectedContentType, expectedVariant }) => {
+    const bucket = makeBucket(objects);
+    const env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
+
+    const res = await worker.fetch(makeRequest(path, { accept }), env);
+
+    expect(res.status).toBe(expectedStatus);
+    expect(res.headers.get("Content-Type")).toBe(expectedContentType);
+    expect(res.headers.get("X-Variant")).toBe(expectedVariant);
+  });
+});
+
 describe("ETag and conditional requests", () => {
   const DATE = "2025-06-15";
   const DATE_PATH = "2025/06/15";
@@ -354,8 +411,12 @@ describe("ETag and conditional requests", () => {
 
   // --- 304 Not Modified when If-None-Match matches ---
 
-  it("returns 304 for /api/:date when If-None-Match matches ETag", async () => {
+  it.each([
+    { name: "GET /api/:date", method: "GET" },
+    { name: "HEAD /api/:date", method: "HEAD" },
+  ])("returns 304 for $name when If-None-Match matches ETag", async ({ method }) => {
     const req = new Request(`https://example.com/api/${DATE}`, {
+      method,
       headers: { "If-None-Match": IMAGE_ETAG },
     });
     const res = await worker.fetch(req, env);
