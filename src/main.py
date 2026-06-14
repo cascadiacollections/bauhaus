@@ -3,9 +3,13 @@
 import argparse
 import json
 import os
+import platform
 import random
+import socket
 import sys
+import time
 from datetime import date
+from datetime import datetime, timezone
 from io import BytesIO
 from math import gcd
 from pathlib import Path
@@ -15,7 +19,7 @@ from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
 
 from fetch import fetch_artwork
 from postprocess import postprocess
-from quality import score_image
+from quality import aesthetic_score, score_image
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 from variants import generate_variants
@@ -27,6 +31,25 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output"
 _EXIF_IMAGE_DESCRIPTION = 0x010E
 _EXIF_ARTIST = 0x013B
 _EXIF_COPYRIGHT = 0x8298
+
+
+def _max_rss_mb() -> float | None:
+    """Best-effort max RSS measurement in MiB on Unix-like systems."""
+    try:
+        import resource
+    except ImportError:
+        return None
+
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    # Linux reports KiB, macOS reports bytes.
+    if sys.platform == "darwin":
+        return round(usage.ru_maxrss / (1024 * 1024), 2)
+    return round(usage.ru_maxrss / 1024, 2)
+
+
+def _write_metrics(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def extract_exif(image_bytes: bytes) -> dict[str, str]:
@@ -227,6 +250,13 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
     }
 
 
+def resolve_runtime_profile(max_size: int, memory_profile: str, generate_variants: bool) -> tuple[int, bool]:
+    """Cap resolution and variant generation for constrained CPU/RAM runtimes."""
+    if memory_profile == "low-memory":
+        return min(max_size, 1024), False
+    return max_size, generate_variants
+
+
 def ensure_models():
     """Download model weights if not present (cross-platform)."""
     weights_dir = Path(__file__).resolve().parent.parent / "models" / "weights"
@@ -238,7 +268,17 @@ def ensure_models():
     subprocess.run([sys.executable, str(script)], check=True)
 
 
-def main():
+def _parse_cli_bool(value: str | None) -> bool:
+    """Parse CLI booleans from --flag, --flag=true, or --flag=false."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Create the CLI parser with backwards-compatible boolean flags."""
     parser = argparse.ArgumentParser(description="Generate daily stylized artwork")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and stylize locally, skip R2 upload")
@@ -268,43 +308,114 @@ def main():
     parser.add_argument("--strip", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Pre-generate EXIF-stripped image variant (default: on)")
+    memory_profile = os.environ.get("MEMORY_PROFILE", "balanced")
+    default_variants = os.environ.get("GENERATE_VARIANTS", "true").lower() != "false"
+    if memory_profile == "low-memory":
+        default_variants = False
+
+    parser.add_argument("--memory-profile", choices=["balanced", "low-memory"],
+                        default=memory_profile,
+                        help="Runtime profile for constrained CPUs/RAM (default: balanced, env: MEMORY_PROFILE)")
     parser.add_argument("--max-size", type=int,
-                        default=int(os.environ.get("MAX_SIZE", "1920")),
-                        help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
-    parser.add_argument("--variants", action=argparse.BooleanOptionalAction,
-                        default=os.environ.get("GENERATE_VARIANTS", "true").lower() != "false",
+                        default=int(os.environ.get("MAX_SIZE", "1280")),
+                        help="Max processing resolution in px (default: 1280, env: MAX_SIZE)")
+    parser.add_argument("--variants", dest="variants", nargs="?", const=True,
+                        default=default_variants, type=_parse_cli_bool,
                         help="Generate AVIF and WebP variants (default: on, env: GENERATE_VARIANTS)")
+    parser.add_argument("--no-variants", dest="variants", action="store_false",
+                        help="Disable AVIF and WebP variant generation")
+    parser.add_argument("--metrics-out", default=os.environ.get("METRICS_OUT", ""),
+                        help="Write run timing/resource metrics JSON to this file path")
+    parser.add_argument("--metrics-label", default=os.environ.get("METRICS_LABEL", ""),
+                        help="Optional label to annotate benchmark runs")
+    return parser
+
+
+def main():
+    run_started = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    def record_timing(name: str, started_at: float) -> None:
+        timings[name] = round(time.perf_counter() - started_at, 3)
+
+    def emit_metrics(
+        args: argparse.Namespace,
+        metrics_path: Path | None,
+        dry_run: bool,
+        variants_count: int,
+        uploaded_count: int,
+    ) -> None:
+        if not metrics_path:
+            return
+
+        payload = {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "source": args.source,
+            "style_mode": style_mode,
+            "dry_run": dry_run,
+            "max_size": args.max_size,
+            "variants_enabled": args.variants,
+            "timings_sec": timings,
+            "total_sec": round(time.perf_counter() - run_started, 3),
+            "peak_rss_mb": _max_rss_mb(),
+            "variants_count": variants_count,
+            "uploaded_objects": uploaded_count,
+            "metrics_label": args.metrics_label or "",
+        }
+        _write_metrics(metrics_path, payload)
+        print(f"Metrics written: {metrics_path}")
+
+    parser = build_parser()
     args = parser.parse_args()
+    metrics_path = Path(args.metrics_out).expanduser() if args.metrics_out else None
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
 
+    args.max_size, args.variants = resolve_runtime_profile(
+        args.max_size,
+        args.memory_profile,
+        args.variants,
+    )
+
     # 1. Fetch CC0 artwork
     quality_gate = not args.skip_quality_check
+    t = time.perf_counter()
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
     artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
+    record_timing("fetch_artwork", t)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")
 
     # 1b. Quality gate
     content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     if not args.skip_quality_check:
+        t = time.perf_counter()
         qscore = score_image(content_img)
+        record_timing("quality_gate", t)
         print(f"  Quality: sharpness={qscore['sharpness']}, "
               f"{qscore['width']}×{qscore['height']}, pass={qscore['pass']}")
         if not qscore["pass"]:
             print("  ⚠ Source image failed quality check — proceeding anyway", file=sys.stderr)
 
     # 2. Pick style reference
+    t = time.perf_counter()
     print(f"Picking style reference (mode={style_mode})...")
     style_img, style_meta = pick_style(style_mode)
+    record_timing("pick_style", t)
     print(f"  Style: {style_meta.get('style_title', 'unknown')}")
 
     # 3. Download models if needed
+    t = time.perf_counter()
     print("Ensuring models are downloaded...")
     ensure_models()
+    record_timing("ensure_models", t)
 
     # 4. Apply AdaIN style transfer
+    t = time.perf_counter()
     print("Applying style transfer...")
     model = StyleTransfer()
 
@@ -327,11 +438,13 @@ def main():
         content_img, style_img,
         alpha=args.alpha, alpha_mask=alpha_mask, max_size=args.max_size,
     )
+    record_timing("style_transfer", t)
     print("  Style transfer complete.")
 
     # 5. Post-processing
     pp_enabled = args.color_harmonize or args.sharpen or args.upscale
     if pp_enabled:
+        t = time.perf_counter()
         steps = []
         if args.color_harmonize:
             steps.append("color-harmonize")
@@ -346,11 +459,13 @@ def main():
             do_sharpen=args.sharpen,
             do_upscale=args.upscale,
         )
+        record_timing("postprocess", t)
         print("  Post-processing complete.")
 
     # Build metadata
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
+    metadata["aesthetic"] = aesthetic_score(stylized)
     metadata["alpha"] = args.alpha
     metadata["alpha_mode"] = args.alpha_mode
     if args.alpha_mode != "uniform":
@@ -364,8 +479,10 @@ def main():
     }
 
     # Extract EXIF metadata from source image
+    t = time.perf_counter()
     print("Extracting source EXIF metadata...")
     source_exif = extract_exif(artwork.image_bytes)
+    record_timing("extract_exif", t)
     if source_exif:
         metadata["exif"] = source_exif
         print(f"  Extracted {len(source_exif)} EXIF tags")
@@ -373,10 +490,12 @@ def main():
         print("  No EXIF metadata found in source image")
 
     # Embed EXIF metadata into images
+    t = time.perf_counter()
     print("Embedding EXIF metadata...")
     stylized_bytes = embed_exif(stylized, metadata)
     original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
     original_bytes = embed_exif(original_img, metadata)
+    record_timing("embed_exif", t)
 
     # Add structured license details and variant descriptors
     metadata["license_details"] = build_license_details(metadata)
@@ -398,6 +517,7 @@ def main():
     # Generate all image variants (AVIF, WebP, progressive JPEG, stripped JPEG)
     variants: dict[str, bytes] = {}
     if args.variants:
+        t = time.perf_counter()
         print("Generating image variants (AVIF, WebP, progressive, stripped)...")
         exif_bytes: bytes | None = None
         try:
@@ -408,6 +528,7 @@ def main():
         except Exception:
             pass
         variants = generate_variants(stylized, exif_bytes=exif_bytes)
+        record_timing("generate_variants", t)
         print(f"  Generated {len(variants)} variant(s): {', '.join(sorted(variants))}")
 
     # Build manifest with aspect_ratio and all variants
@@ -442,9 +563,17 @@ def main():
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
             stripped_path.write_bytes(stripped_bytes)
             print(f"  Stripped:  {stripped_path}")
+        emit_metrics(
+            args=args,
+            metrics_path=metrics_path,
+            dry_run=True,
+            variants_count=len(variants),
+            uploaded_count=0,
+        )
         return
 
     # 7. Upload to R2
+    t = time.perf_counter()
     print("Uploading to R2...")
     keys = upload(
         original_bytes, stylized_bytes, metadata,
@@ -453,9 +582,17 @@ def main():
         variants=variants,
         stripped_bytes=stripped_bytes,
     )
+    record_timing("upload", t)
     print("Uploaded:")
     for name, key in keys.items():
         print(f"  {name}: {key}")
+    emit_metrics(
+        args=args,
+        metrics_path=metrics_path,
+        dry_run=False,
+        variants_count=len(variants),
+        uploaded_count=len(keys),
+    )
 
 
 if __name__ == "__main__":

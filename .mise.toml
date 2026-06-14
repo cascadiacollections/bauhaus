@@ -1,5 +1,6 @@
 [tools]
 python = "3.14"
 node = "24"
+bun = "latest"
 uv = "latest"
 just = "latest"

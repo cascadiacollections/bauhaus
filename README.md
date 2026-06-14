@@ -205,7 +205,9 @@ wrangler analytics-engine sql 'SELECT * FROM web_errors LIMIT 10'
 
 ## Local development
 
-Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), [Bun](https://bun.sh), and [just](https://github.com/casey/just)).
+
+For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Bun, Node, Python 3.14, uv, and just.
 
 ```bash
 # Install dependencies
@@ -220,6 +222,12 @@ just test
 # Generate locally (no R2 upload)
 just generate
 
+# Generate benchmark metrics for parity tracking
+just benchmark-generate --max-size 1536
+
+# Enforce local benchmark thresholds
+just benchmark-gate
+
 # Options (extra args forwarded to src/main.py)
 just generate --source unsplash   # Unsplash landscape (default)
 just generate --source met        # Metropolitan Museum
@@ -232,12 +240,18 @@ just generate --max-size 1536     # higher processing resolution
 just
 ```
 
-### Docker
+### Docker / Podman
 
 ```bash
 just docker-build
 just docker-run
+
+# Podman-compatible equivalents
+podman build -t bauhaus .
+podman run --rm -v "$PWD/output:/app/output" --env-file .env bauhaus --dry-run
 ```
+
+Use a rootless Podman setup and a writable bind mount for `output/` if you want to keep generated files on the host.
 
 ### Worker
 
@@ -259,9 +273,15 @@ just worker-check     # typecheck
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
-| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`) |
-| `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
-| `GENERATE_VARIANTS` | `true` (default) generate AVIF, WebP, progressive, and stripped variants alongside JPEG; `false` to disable |
+| `MEMORY_PROFILE` | `balanced` (default) or `low-memory`. `low-memory` caps `MAX_SIZE` at 1024 and disables variant generation by default to fit constrained CPU/RAM runners. |
+| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`, or `false` in `low-memory`) |
+| `MAX_SIZE` | Max processing resolution in pixels (default: `1280`). Lower values are better for the current CPU-only/free-tier runner; `low-memory` caps this at `1024`. |
+
+### Secrets and deployment hygiene
+
+- Keep secrets in GitHub Actions secrets / local `.env` files only; never print them in logs.
+- The production workflow uses `R2_*` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
+- For local Podman runs, pass env vars via `--env-file .env` or a secret manager rather than embedding them in shell history.
 
 ## Style references
 

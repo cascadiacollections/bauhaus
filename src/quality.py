@@ -1,7 +1,8 @@
-"""Image quality scoring for source filtering.
+"""Image quality scoring for source filtering and output evaluation.
 
 Lightweight quality metrics evaluated on CPU using Pillow and NumPy.
-Used to reject low-quality source images before style transfer.
+Used to reject low-quality source images before style transfer and to
+provide a cheap aesthetic signal for generated outputs.
 """
 
 import numpy as np
@@ -68,6 +69,45 @@ def check_aspect_ratio(
         return False
     ratio = w / h
     return min_ratio <= ratio <= max_ratio
+
+
+def colorfulness_score(image: Image.Image) -> float:
+    """Estimate color richness using a lightweight RGB variance heuristic."""
+    rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
+    r = rgb[..., 0]
+    g = rgb[..., 1]
+    b = rgb[..., 2]
+
+    rg = r - g
+    yb = 0.5 * (r + g) - b
+    colorfulness = np.sqrt(np.mean(rg * rg) + np.mean(yb * yb))
+    return float(colorfulness)
+
+
+def contrast_score(image: Image.Image) -> float:
+    """Estimate perceptual contrast from grayscale standard deviation."""
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    return float(gray.std())
+
+
+def aesthetic_score(image: Image.Image) -> dict:
+    """Create a lightweight 0–10 aesthetic signal from CPU-only heuristics."""
+    sharpness = sharpness_score(image)
+    colorfulness = colorfulness_score(image)
+    contrast = contrast_score(image)
+
+    sharp_norm = min(1.0, sharpness / 500.0)
+    color_norm = min(1.0, colorfulness / 80.0)
+    contrast_norm = min(1.0, contrast / 80.0)
+    score = 10.0 * (0.45 * sharp_norm + 0.30 * color_norm + 0.25 * contrast_norm)
+
+    return {
+        "score": round(float(score), 2),
+        "sharpness": round(float(sharpness), 2),
+        "colorfulness": round(float(colorfulness), 2),
+        "contrast": round(float(contrast), 2),
+        "method": "heuristic-v1",
+    }
 
 
 def score_image(image: Image.Image) -> dict:
