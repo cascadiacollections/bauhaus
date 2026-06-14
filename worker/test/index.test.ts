@@ -349,13 +349,13 @@ describe("variant resolution fixtures", () => {
       expectedContentType: "image/jpeg",
       expectedVariant: "baseline",
     },
-  ])("$name", async ({ path, accept, objects, expectedContentType, expectedVariant }) => {
+  ])("$name", async ({ path, accept, objects, expectedStatus, expectedContentType, expectedVariant }) => {
     const bucket = makeBucket(objects);
     const env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
 
     const res = await worker.fetch(makeRequest(path, { accept }), env);
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(expectedStatus);
     expect(res.headers.get("Content-Type")).toBe(expectedContentType);
     expect(res.headers.get("X-Variant")).toBe(expectedVariant);
   });
@@ -417,16 +417,6 @@ describe("ETag and conditional requests", () => {
   ])("returns 304 for $name when If-None-Match matches ETag", async ({ method }) => {
     const req = new Request(`https://example.com/api/${DATE}`, {
       method,
-      headers: { "If-None-Match": IMAGE_ETAG },
-    });
-    const res = await worker.fetch(req, env);
-    expect(res.status).toBe(304);
-    expect(res.headers.get("ETag")).toBe(IMAGE_ETAG);
-    expect(res.body).toBeNull();
-  });
-
-  it("returns 304 for /api/:date when If-None-Match matches ETag", async () => {
-    const req = new Request(`https://example.com/api/${DATE}`, {
       headers: { "If-None-Match": IMAGE_ETAG },
     });
     const res = await worker.fetch(req, env);
