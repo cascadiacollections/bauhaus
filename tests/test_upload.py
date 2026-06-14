@@ -171,3 +171,62 @@ class TestUploadVariants:
         assert mock_client.put_object.call_count == 4
         assert "stylized_avif" not in keys
         assert "manifest" not in keys
+
+
+class TestUploadMetadataSig:
+    """Tests for the metadata_sig parameter in upload()."""
+
+    def _run_upload(self, metadata_sig=None, today=None):
+        from datetime import date
+        today = today or date(2025, 7, 14)
+        mock_client = MagicMock()
+        with patch("upload._get_client", return_value=mock_client):
+            keys = upload(
+                original_bytes=b"original-data",
+                stylized_bytes=b"stylized-data",
+                metadata={"title": "Test Art"},
+                bucket="test-bucket",
+                today=today,
+                metadata_sig=metadata_sig,
+            )
+        return keys, mock_client
+
+    def test_no_sig_no_extra_call(self):
+        """Without metadata_sig, call count stays at 4."""
+        keys, mock_client = self._run_upload()
+        assert mock_client.put_object.call_count == 4
+        assert "metadata_sig" not in keys
+
+    def test_sig_uploaded_when_provided(self):
+        """Providing metadata_sig should add one extra put_object call."""
+        sig_bytes = b"fakesig"
+        keys, mock_client = self._run_upload(metadata_sig=sig_bytes)
+        assert mock_client.put_object.call_count == 5
+        assert keys["metadata_sig"] == "metadata/2025/07/14.json.sig"
+
+    def test_sig_key_date_formatting(self):
+        """Signature key should use the same date path as the metadata JSON."""
+        from datetime import date
+        sig_bytes = b"fakesig"
+        keys, _ = self._run_upload(metadata_sig=sig_bytes, today=date(2025, 12, 25))
+        assert keys["metadata_sig"] == "metadata/2025/12/25.json.sig"
+
+    def test_sig_content_type(self):
+        """Signature object should use application/pgp-signature content type."""
+        sig_bytes = b"fakesig"
+        _, mock_client = self._run_upload(metadata_sig=sig_bytes)
+        calls = mock_client.put_object.call_args_list
+        sig_call = next(
+            c for c in calls if c.kwargs.get("Key", "").endswith(".json.sig")
+        )
+        assert sig_call.kwargs["ContentType"] == "application/pgp-signature"
+
+    def test_sig_body_matches_input(self):
+        """The bytes passed as metadata_sig should be uploaded verbatim."""
+        sig_bytes = b"-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n"
+        _, mock_client = self._run_upload(metadata_sig=sig_bytes)
+        calls = mock_client.put_object.call_args_list
+        sig_call = next(
+            c for c in calls if c.kwargs.get("Key", "").endswith(".json.sig")
+        )
+        assert sig_call.kwargs["Body"] == sig_bytes
