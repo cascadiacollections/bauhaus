@@ -12,6 +12,7 @@ from PIL import Image
 from main import (
     build_license_details,
     build_manifest,
+    build_parser,
     build_variants,
     embed_exif,
     extract_exif,
@@ -59,6 +60,23 @@ class TestStyleRotation:
         for day in [1, n, n + 1, 365]:
             idx = day % n
             assert 0 <= idx < n
+
+
+class TestVariantsCLIArg:
+    def test_accepts_false_value(self):
+        parser = build_parser()
+        args = parser.parse_args(["--variants=false"])
+        assert args.variants is False
+
+    def test_accepts_true_value(self):
+        parser = build_parser()
+        args = parser.parse_args(["--variants=true"])
+        assert args.variants is True
+
+    def test_accepts_no_variants_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["--no-variants"])
+        assert args.variants is False
 
 
 class TestMaxSizeCLIArg:

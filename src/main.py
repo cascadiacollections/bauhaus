@@ -268,43 +268,17 @@ def ensure_models():
     subprocess.run([sys.executable, str(script)], check=True)
 
 
-def main():
-    run_started = time.perf_counter()
-    timings: dict[str, float] = {}
+def _parse_cli_bool(value: str | None) -> bool:
+    """Parse CLI booleans from --flag, --flag=true, or --flag=false."""
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
 
-    def record_timing(name: str, started_at: float) -> None:
-        timings[name] = round(time.perf_counter() - started_at, 3)
 
-    def emit_metrics(
-        args: argparse.Namespace,
-        metrics_path: Path | None,
-        dry_run: bool,
-        variants_count: int,
-        uploaded_count: int,
-    ) -> None:
-        if not metrics_path:
-            return
-
-        payload = {
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-            "hostname": socket.gethostname(),
-            "platform": platform.platform(),
-            "python_version": platform.python_version(),
-            "source": args.source,
-            "style_mode": style_mode,
-            "dry_run": dry_run,
-            "max_size": args.max_size,
-            "variants_enabled": args.variants,
-            "timings_sec": timings,
-            "total_sec": round(time.perf_counter() - run_started, 3),
-            "peak_rss_mb": _max_rss_mb(),
-            "variants_count": variants_count,
-            "uploaded_objects": uploaded_count,
-            "metrics_label": args.metrics_label or "",
-        }
-        _write_metrics(metrics_path, payload)
-        print(f"Metrics written: {metrics_path}")
-
+def build_parser() -> argparse.ArgumentParser:
+    """Create the CLI parser with backwards-compatible boolean flags."""
     parser = argparse.ArgumentParser(description="Generate daily stylized artwork")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and stylize locally, skip R2 upload")
@@ -345,13 +319,56 @@ def main():
     parser.add_argument("--max-size", type=int,
                         default=int(os.environ.get("MAX_SIZE", "1280")),
                         help="Max processing resolution in px (default: 1280, env: MAX_SIZE)")
-    parser.add_argument("--variants", action=argparse.BooleanOptionalAction,
-                        default=default_variants,
+    parser.add_argument("--variants", dest="variants", nargs="?", const=True,
+                        default=default_variants, type=_parse_cli_bool,
                         help="Generate AVIF and WebP variants (default: on, env: GENERATE_VARIANTS)")
+    parser.add_argument("--no-variants", dest="variants", action="store_false",
+                        help="Disable AVIF and WebP variant generation")
     parser.add_argument("--metrics-out", default=os.environ.get("METRICS_OUT", ""),
                         help="Write run timing/resource metrics JSON to this file path")
     parser.add_argument("--metrics-label", default=os.environ.get("METRICS_LABEL", ""),
                         help="Optional label to annotate benchmark runs")
+    return parser
+
+
+def main():
+    run_started = time.perf_counter()
+    timings: dict[str, float] = {}
+
+    def record_timing(name: str, started_at: float) -> None:
+        timings[name] = round(time.perf_counter() - started_at, 3)
+
+    def emit_metrics(
+        args: argparse.Namespace,
+        metrics_path: Path | None,
+        dry_run: bool,
+        variants_count: int,
+        uploaded_count: int,
+    ) -> None:
+        if not metrics_path:
+            return
+
+        payload = {
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "hostname": socket.gethostname(),
+            "platform": platform.platform(),
+            "python_version": platform.python_version(),
+            "source": args.source,
+            "style_mode": style_mode,
+            "dry_run": dry_run,
+            "max_size": args.max_size,
+            "variants_enabled": args.variants,
+            "timings_sec": timings,
+            "total_sec": round(time.perf_counter() - run_started, 3),
+            "peak_rss_mb": _max_rss_mb(),
+            "variants_count": variants_count,
+            "uploaded_objects": uploaded_count,
+            "metrics_label": args.metrics_label or "",
+        }
+        _write_metrics(metrics_path, payload)
+        print(f"Metrics written: {metrics_path}")
+
+    parser = build_parser()
     args = parser.parse_args()
     metrics_path = Path(args.metrics_out).expanduser() if args.metrics_out else None
 
