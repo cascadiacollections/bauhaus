@@ -6,7 +6,7 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13"
 dependencies = [
-    "torch>=2.0,<3.0",
+    "torch>=2.12.0,<3.0",
     "torchvision>=0.15,<1.0",
     "pillow>=12.1.1,<13.0",
     "boto3>=1.28,<2.0",
