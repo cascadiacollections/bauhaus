@@ -76,7 +76,7 @@ jobs:
             --max-style-transfer "$MAX_STYLE_TRANSFER_SEC"
 
       - name: Upload benchmark metrics
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-github-hosted
           path: output/benchmark/*.json
@@ -124,7 +124,7 @@ jobs:
             --max-style-transfer "$MAX_STYLE_TRANSFER_SEC"
 
       - name: Upload benchmark metrics
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-self-hosted-macos-arm64
           path: output/benchmark/*.json
