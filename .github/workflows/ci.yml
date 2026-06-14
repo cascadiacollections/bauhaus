@@ -62,7 +62,7 @@ jobs:
         run: podman run --rm bauhaus:test --dry-run --source met --skip-quality-check --max-size 1024 --variants=false
 
   worker:
-    name: Worker (typecheck)
+    name: Worker (typecheck + tests)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -84,3 +84,7 @@ jobs:
       - name: Typecheck
         working-directory: worker
         run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: worker
+        run: npm test

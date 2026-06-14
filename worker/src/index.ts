@@ -231,13 +231,12 @@ async function getImageObject(
   progressive: boolean = false,
   strip: boolean = false,
 ): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
-  // For JPEG with ?progressive=true, try the progressive variant first
-  if (format === "jpeg" && progressive) {
+  // Explicit JPEG variants should win over negotiated format selection.
+  if (progressive) {
     const obj = await bucket.get(`${basePath}.progressive.jpg`);
     if (obj) return { obj, contentType: "image/jpeg" };
   }
 
-  // For JPEG with ?strip=true, try the stripped variant first
   if (strip) {
     const stripped = await bucket.get(`${basePath}.stripped.jpg`);
     if (stripped) return { obj: stripped, contentType: "image/jpeg" };
@@ -269,7 +268,7 @@ async function headImageObject(
   progressive = false,
   strip = false,
 ): Promise<{ head: R2Object; key: string; contentType: string } | null> {
-  if (format === "jpeg" && progressive) {
+  if (progressive) {
     const key = `${basePath}.progressive.jpg`;
     const h = await bucket.head(key);
     if (h) return { head: h, key, contentType: "image/jpeg" };
@@ -325,7 +324,11 @@ function buildImageHeaders(
   contentType: string,
   today: boolean,
 ): Record<string, string> {
-  const variant = key?.endsWith(".progressive.jpg") ? "progressive" : "baseline";
+  const variant = key?.endsWith(".progressive.jpg")
+    ? "progressive"
+    : key?.endsWith(".stripped.jpg")
+      ? "stripped"
+      : "baseline";
   const headers: Record<string, string> = {
     "Content-Type": contentType,
     "Cache-Control": today ? TODAY_CACHE : (httpMetadata?.cacheControl ?? IMMUTABLE_CACHE),
