@@ -59,7 +59,7 @@ jobs:
       - name: Build container image
         run: podman build -t bauhaus:test .
       - name: Run dry-run smoke
-        run: podman run --rm bauhaus:test --dry-run --max-size 1024 --variants=false
+        run: podman run --rm bauhaus:test --dry-run --max-size 1024 --no-variants
 
   worker:
     name: Worker (typecheck)
