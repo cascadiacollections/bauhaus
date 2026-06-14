@@ -7,12 +7,14 @@
     "test": "vitest run"
   },
   "overrides": {
-    "undici": ">=7.24.0"
+    "undici": ">=7.24.0",
+    "esbuild": "^0.28.1"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250312.0",
-    "typescript": "^5.7.0",
-    "vitest": "^4.1.0",
-    "wrangler": "^4.73.0"
+    "@cloudflare/workers-types": "^4.20260612.1",
+    "esbuild": "^0.28.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8",
+    "wrangler": "^4.100.0"
   }
 }

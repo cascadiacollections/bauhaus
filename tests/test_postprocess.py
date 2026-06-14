@@ -29,6 +29,11 @@ def _gradient_image(size: tuple[int, int] = (256, 64)) -> Image.Image:
     return img
 
 
+def _pixel_values(image: Image.Image) -> list[tuple[int, ...]]:
+    """Collect pixel values without relying on deprecated getdata()."""
+    return [image.getpixel((x, y)) for y in range(image.height) for x in range(image.width)]
+
+
 # --- _build_histogram_lut ---
 
 class TestBuildHistogramLut:
@@ -74,7 +79,7 @@ class TestColorHarmonize:
         stylized = _solid_image((200, 100, 50))
         content = _solid_image((100, 150, 200))
         result = color_harmonize(stylized, content, strength=0.0)
-        assert result.tobytes() == stylized.tobytes()
+        assert _pixel_values(result) == _pixel_values(stylized)
 
     def test_different_sizes(self):
         stylized = _solid_image((200, 100, 50), size=(64, 64))
@@ -142,7 +147,7 @@ class TestPostprocess:
             stylized, content,
             harmonize=False, do_sharpen=False, do_upscale=False,
         )
-        assert result.tobytes() == stylized.tobytes()
+        assert _pixel_values(result) == _pixel_values(stylized)
 
     def test_only_harmonize(self):
         stylized = _solid_image((200, 100, 50))
