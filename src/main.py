@@ -19,7 +19,7 @@ from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
 
 from fetch import fetch_artwork
 from postprocess import postprocess
-from quality import score_image
+from quality import aesthetic_score, score_image
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import upload
 from variants import generate_variants
@@ -250,6 +250,13 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
     }
 
 
+def resolve_runtime_profile(max_size: int, memory_profile: str, generate_variants: bool) -> tuple[int, bool]:
+    """Cap resolution and variant generation for constrained CPU/RAM runtimes."""
+    if memory_profile == "low-memory":
+        return min(max_size, 1024), False
+    return max_size, generate_variants
+
+
 def ensure_models():
     """Download model weights if not present (cross-platform)."""
     weights_dir = Path(__file__).resolve().parent.parent / "models" / "weights"
@@ -327,11 +334,19 @@ def main():
     parser.add_argument("--strip", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Pre-generate EXIF-stripped image variant (default: on)")
+    memory_profile = os.environ.get("MEMORY_PROFILE", "balanced")
+    default_variants = os.environ.get("GENERATE_VARIANTS", "true").lower() != "false"
+    if memory_profile == "low-memory":
+        default_variants = False
+
+    parser.add_argument("--memory-profile", choices=["balanced", "low-memory"],
+                        default=memory_profile,
+                        help="Runtime profile for constrained CPUs/RAM (default: balanced, env: MEMORY_PROFILE)")
     parser.add_argument("--max-size", type=int,
-                        default=int(os.environ.get("MAX_SIZE", "1920")),
-                        help="Max processing resolution in px (default: 1920, env: MAX_SIZE)")
+                        default=int(os.environ.get("MAX_SIZE", "1280")),
+                        help="Max processing resolution in px (default: 1280, env: MAX_SIZE)")
     parser.add_argument("--variants", action=argparse.BooleanOptionalAction,
-                        default=os.environ.get("GENERATE_VARIANTS", "true").lower() != "false",
+                        default=default_variants,
                         help="Generate AVIF and WebP variants (default: on, env: GENERATE_VARIANTS)")
     parser.add_argument("--metrics-out", default=os.environ.get("METRICS_OUT", ""),
                         help="Write run timing/resource metrics JSON to this file path")
@@ -342,6 +357,12 @@ def main():
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
+
+    args.max_size, args.variants = resolve_runtime_profile(
+        args.max_size,
+        args.memory_profile,
+        args.variants,
+    )
 
     # 1. Fetch CC0 artwork
     quality_gate = not args.skip_quality_check
@@ -427,6 +448,7 @@ def main():
     # Build metadata
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
+    metadata["aesthetic"] = aesthetic_score(stylized)
     metadata["alpha"] = args.alpha
     metadata["alpha_mode"] = args.alpha_mode
     if args.alpha_mode != "uniform":

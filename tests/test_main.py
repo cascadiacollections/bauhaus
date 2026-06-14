@@ -18,6 +18,7 @@ from main import (
     generate_variants,
     load_styles_manifest,
     main,
+    resolve_runtime_profile,
     strip_exif,
     STYLES_DIR,
 )
@@ -101,6 +102,18 @@ class TestMaxSizeCLIArg:
 
 
 # --- Variant generation ---
+
+
+class TestResolveRuntimeProfile:
+    def test_balanced_profile_keeps_settings(self):
+        max_size, variants = resolve_runtime_profile(1536, "balanced", True)
+        assert max_size == 1536
+        assert variants is True
+
+    def test_low_memory_profile_caps_resolution_and_disables_variants(self):
+        max_size, variants = resolve_runtime_profile(2048, "low-memory", True)
+        assert max_size == 1024
+        assert variants is False
 
 
 class TestGenerateVariants:

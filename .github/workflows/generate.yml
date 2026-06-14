@@ -45,6 +45,8 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'
+          MEMORY_PROFILE: low-memory
+          MAX_SIZE: '1024'
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''

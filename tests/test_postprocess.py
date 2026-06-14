@@ -74,7 +74,7 @@ class TestColorHarmonize:
         stylized = _solid_image((200, 100, 50))
         content = _solid_image((100, 150, 200))
         result = color_harmonize(stylized, content, strength=0.0)
-        assert list(result.getdata()) == list(stylized.getdata())
+        assert result.tobytes() == stylized.tobytes()
 
     def test_different_sizes(self):
         stylized = _solid_image((200, 100, 50), size=(64, 64))
@@ -142,7 +142,7 @@ class TestPostprocess:
             stylized, content,
             harmonize=False, do_sharpen=False, do_upscale=False,
         )
-        assert list(result.getdata()) == list(stylized.getdata())
+        assert result.tobytes() == stylized.tobytes()
 
     def test_only_harmonize(self):
         stylized = _solid_image((200, 100, 50))
