@@ -205,7 +205,9 @@ wrangler analytics-engine sql 'SELECT * FROM web_errors LIMIT 10'
 
 ## Local development
 
-Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), [Bun](https://bun.sh), and [just](https://github.com/casey/just)).
+
+For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Bun, Node, Python 3.14, uv, and just.
 
 ```bash
 # Install dependencies
