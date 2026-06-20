@@ -70,11 +70,11 @@ async function getToday(bucket: R2Bucket): Promise<string> {
   return data.date;
 }
 
-function isProgressive(url: URL): boolean {
+export function isProgressive(url: URL): boolean {
   return url.searchParams.get("progressive") === "true";
 }
 
-function isStrip(url: URL): boolean {
+export function isStrip(url: URL): boolean {
   return url.searchParams.get("strip") === "true";
 }
 
@@ -93,9 +93,10 @@ const TELEMETRY_BODY_LIMIT = 4096;
 const TELEMETRY_ORIGINS_DEFAULT =
   "https://kevintcoughlin.com,https://www.kevintcoughlin.com";
 
-function getAllowedOrigins(env: Env): Set<string> {
-  const raw = env.ALLOWED_ORIGINS ?? TELEMETRY_ORIGINS_DEFAULT;
-  return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+export function getAllowedOrigins(env: Env): Set<string> {
+  const raw = (env.ALLOWED_ORIGINS ?? TELEMETRY_ORIGINS_DEFAULT).trim();
+  const value = raw || TELEMETRY_ORIGINS_DEFAULT;
+  return new Set(value.split(",").map((s) => s.trim()).filter(Boolean));
 }
 
 function telemetryCorsHeaders(origin: string): Record<string, string> {
@@ -106,7 +107,7 @@ function telemetryCorsHeaders(origin: string): Record<string, string> {
   };
 }
 
-function classifyUA(ua: string): "mobile" | "desktop" {
+export function classifyUA(ua: string): "mobile" | "desktop" {
   return /Mobile|Android|iPhone|iPad/i.test(ua) ? "mobile" : "desktop";
 }
 
