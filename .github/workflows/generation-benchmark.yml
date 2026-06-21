@@ -38,7 +38,7 @@ jobs:
       MAX_STYLE_TRANSFER_SEC: ${{ github.event_name == 'workflow_dispatch' && inputs.max_style_transfer_sec || 120 }}
       BENCHMARK_METRICS: output/benchmark/github-hosted.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -92,7 +92,7 @@ jobs:
       UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
       BENCHMARK_METRICS: output/benchmark/self-hosted-macos-arm64.json
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Verify toolchain (mise)
         run: |

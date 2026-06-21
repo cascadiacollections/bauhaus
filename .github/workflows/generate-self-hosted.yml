@@ -19,7 +19,7 @@ jobs:
       UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
       MODELS_CACHE: models/weights
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # mise manages python, uv, just — install once, reuse across runs.
       # On first run: `curl https://mise.run | sh` then `mise install` on
