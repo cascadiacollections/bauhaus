@@ -24,6 +24,24 @@ _VARIANT_CONTENT_TYPES: dict[str, str] = {
 }
 
 
+def prepare_metadata_for_upload(
+    metadata: dict,
+    today: date | None = None,
+    generated_at: datetime | None = None,
+) -> dict:
+    """Return metadata augmented with stable upload-time fields."""
+    today = today or date.today()
+    prepared = dict(metadata)
+    prepared.setdefault("date", today.isoformat())
+    prepared.setdefault("generated_at", (generated_at or datetime.now(UTC)).isoformat())
+    return prepared
+
+
+def serialize_metadata(metadata: dict) -> bytes:
+    """Serialize metadata with canonical ordering for signing + upload."""
+    return json.dumps(metadata, indent=2, sort_keys=True).encode()
+
+
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
@@ -85,13 +103,13 @@ def upload(
             keys[f"stylized_{suffix.replace('.', '_')}"] = key
 
     # Metadata JSON
-    metadata["date"] = today.isoformat()
-    metadata["generated_at"] = datetime.now(UTC).isoformat()
+    prepared_metadata = prepare_metadata_for_upload(metadata, today=today)
+    metadata_bytes = serialize_metadata(prepared_metadata)
     key = f"metadata/{date_path}.json"
     client.put_object(
         Bucket=bucket,
         Key=key,
-        Body=json.dumps(metadata, indent=2).encode(),
+        Body=metadata_bytes,
         ContentType="application/json",
         CacheControl="public, max-age=31536000, immutable",
     )

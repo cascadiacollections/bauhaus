@@ -1,10 +1,10 @@
 """Tests for upload.py — key generation, metadata enrichment, and S3 calls."""
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
-from upload import upload
+from upload import prepare_metadata_for_upload, serialize_metadata, upload
 
 
 class TestUpload:
@@ -230,3 +230,32 @@ class TestUploadMetadataSig:
             c for c in calls if c.kwargs.get("Key", "").endswith(".json.sig")
         )
         assert sig_call.kwargs["Body"] == sig_bytes
+
+    def test_uploaded_metadata_bytes_match_canonical_serialization(self):
+        """Uploaded metadata payload should exactly match canonical serializer output."""
+        today = date(2025, 7, 14)
+        metadata = {"title": "Test Art", "artist": "Test Artist"}
+        prepared = prepare_metadata_for_upload(
+            metadata,
+            today=today,
+            generated_at=datetime(2025, 7, 14, tzinfo=UTC),
+        )
+        expected_bytes = serialize_metadata(prepared)
+
+        mock_client = MagicMock()
+        with patch("upload._get_client", return_value=mock_client):
+            upload(
+                original_bytes=b"original-data",
+                stylized_bytes=b"stylized-data",
+                metadata=prepared,
+                bucket="test-bucket",
+                today=today,
+                metadata_sig=b"fakesig",
+            )
+
+        calls = mock_client.put_object.call_args_list
+        metadata_call = next(
+            c for c in calls if c.kwargs.get("Key", "").endswith(".json")
+            and c.kwargs.get("Key", "").startswith("metadata/")
+        )
+        assert metadata_call.kwargs["Body"] == expected_bytes
