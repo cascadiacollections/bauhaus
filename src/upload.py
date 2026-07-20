@@ -28,13 +28,6 @@ def _get_client():
     )
 
 
-<<<<<<< HEAD
-_VARIANT_CONTENT_TYPES: dict[str, str] = {
-    "avif": "image/avif",
-    "webp": "image/webp",
-}
-
-
 def prepare_metadata_for_upload(
     metadata: dict,
     today: date | None = None,
@@ -53,8 +46,6 @@ def serialize_metadata(metadata: dict) -> bytes:
     return json.dumps(metadata, indent=2, sort_keys=True).encode()
 
 
-=======
->>>>>>> origin/main
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,

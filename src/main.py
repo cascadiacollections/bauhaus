@@ -19,12 +19,8 @@ from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
 
 from fetch import fetch_artwork
 from postprocess import postprocess
-<<<<<<< HEAD
-from quality import score_image
-from sign_metadata import sign_metadata
-=======
 from quality import aesthetic_score, score_image
->>>>>>> origin/main
+from sign_metadata import sign_metadata
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import prepare_metadata_for_upload, serialize_metadata, upload
 from variants import generate_variants
@@ -588,13 +584,11 @@ def main():
             stripped_path = OUTPUT_DIR / "stylized.stripped.jpg"
             stripped_path.write_bytes(stripped_bytes)
             print(f"  Stripped:  {stripped_path}")
-<<<<<<< HEAD
 
         if metadata_sig:
             sig_path = OUTPUT_DIR / "metadata.json.sig"
             sig_path.write_bytes(metadata_sig)
             print(f"  Signature: {sig_path}")
-=======
         emit_metrics(
             args=args,
             metrics_path=metrics_path,
@@ -602,7 +596,6 @@ def main():
             variants_count=len(variants),
             uploaded_count=0,
         )
->>>>>>> origin/main
         return
 
     # 7. Upload to R2

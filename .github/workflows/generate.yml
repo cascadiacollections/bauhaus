@@ -54,14 +54,11 @@ jobs:
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'
-<<<<<<< HEAD
-          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-=======
           MEMORY_PROFILE: balanced
           MAX_SIZE: '1536'
           GENERATE_VARIANTS: 'true'
->>>>>>> origin/main
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''
