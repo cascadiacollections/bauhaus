@@ -9,10 +9,12 @@ function fakeR2Body(
   data: string | object,
   contentType?: string,
   etag?: string,
+  key?: string,
 ): R2ObjectBody {
   const body =
     typeof data === "string" ? data : JSON.stringify(data);
   return {
+    key,
     body: new ReadableStream({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(body));
@@ -54,6 +56,30 @@ function makeRequest(
     method: opts?.method ?? "GET",
     headers: opts?.accept ? { Accept: opts.accept } : {},
   });
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for telemetry tests
+// ---------------------------------------------------------------------------
+
+function makeAnalyticsDataset(): AnalyticsEngineDataset {
+  return { writeDataPoint: vi.fn() } as unknown as AnalyticsEngineDataset;
+}
+
+const ALLOWED_ORIGIN = "https://kevintcoughlin.com";
+
+function makeTelemetryEnv(): {
+  BUCKET: R2Bucket;
+  WEB_VITALS: AnalyticsEngineDataset;
+  WEB_ERRORS: AnalyticsEngineDataset;
+  ALLOWED_ORIGINS: string;
+} {
+  return {
+    BUCKET: makeBucket({}),
+    WEB_VITALS: makeAnalyticsDataset(),
+    WEB_ERRORS: makeAnalyticsDataset(),
+    ALLOWED_ORIGINS: ALLOWED_ORIGIN,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +167,7 @@ describe("worker fetch handler", () => {
   const DATE_PATH = "2025/06/15";
 
   let bucket: R2Bucket;
-  let env: { BUCKET: R2Bucket };
+  let env: { BUCKET: R2Bucket; WEB_VITALS: AnalyticsEngineDataset; WEB_ERRORS: AnalyticsEngineDataset; ALLOWED_ORIGINS: string };
 
   beforeEach(() => {
     bucket = makeBucket({
@@ -152,7 +178,7 @@ describe("worker fetch handler", () => {
       [`originals/${DATE_PATH}.jpg`]: fakeR2Body("orig-jpeg", "image/jpeg"),
       [`metadata/${DATE_PATH}.json`]: fakeR2Body({ title: "test" }),
     });
-    env = { BUCKET: bucket };
+    env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
   });
 
   // --- Vary header ---
@@ -236,7 +262,7 @@ describe("worker fetch handler", () => {
     });
     const res = await worker.fetch(
       makeRequest(`/api/${DATE}`, { accept: "image/avif,*/*" }),
-      { BUCKET: jpegOnly },
+      { BUCKET: jpegOnly, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" },
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toBe("image/jpeg");
@@ -248,7 +274,7 @@ describe("worker fetch handler", () => {
     });
     const res = await worker.fetch(
       makeRequest(`/api/${DATE}`),
-      { BUCKET: emptyBucket },
+      { BUCKET: emptyBucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" },
     );
     expect(res.status).toBe(404);
   });
@@ -280,6 +306,61 @@ describe("worker fetch handler", () => {
 // ETag and conditional requests (If-None-Match / 304 Not Modified)
 // ---------------------------------------------------------------------------
 
+describe("variant resolution fixtures", () => {
+  const DATE = "2025-06-15";
+  const DATE_PATH = "2025/06/15";
+
+  it.each([
+    {
+      name: "progressive=true prefers the progressive JPEG variant over AVIF negotiation",
+      path: `/api/${DATE}?format=avif&progressive=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.progressive.jpg`]: fakeR2Body("prog-bytes", "image/jpeg", '"prog-etag"', `stylized/${DATE_PATH}.progressive.jpg`),
+        [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"', `stylized/${DATE_PATH}.avif`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "progressive",
+    },
+    {
+      name: "strip=true prefers the stripped JPEG variant over AVIF negotiation",
+      path: `/api/${DATE}?format=avif&strip=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.stripped.jpg`]: fakeR2Body("strip-bytes", "image/jpeg", '"strip-etag"', `stylized/${DATE_PATH}.stripped.jpg`),
+        [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"', `stylized/${DATE_PATH}.avif`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "stripped",
+    },
+    {
+      name: "progressive=true falls back to baseline JPEG when the progressive variant is unavailable",
+      path: `/api/${DATE}?format=avif&progressive=true`,
+      accept: "image/avif,image/webp,*/*",
+      objects: {
+        "latest.json": fakeR2Body({ date: DATE }),
+        [`stylized/${DATE_PATH}.jpg`]: fakeR2Body("jpeg-bytes", "image/jpeg", '"jpeg-etag"', `stylized/${DATE_PATH}.jpg`),
+      },
+      expectedStatus: 200,
+      expectedContentType: "image/jpeg",
+      expectedVariant: "baseline",
+    },
+  ])("$name", async ({ path, accept, objects, expectedStatus, expectedContentType, expectedVariant }) => {
+    const bucket = makeBucket(objects);
+    const env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
+
+    const res = await worker.fetch(makeRequest(path, { accept }), env);
+
+    expect(res.status).toBe(expectedStatus);
+    expect(res.headers.get("Content-Type")).toBe(expectedContentType);
+    expect(res.headers.get("X-Variant")).toBe(expectedVariant);
+  });
+});
+
 describe("ETag and conditional requests", () => {
   const DATE = "2025-06-15";
   const DATE_PATH = "2025/06/15";
@@ -288,7 +369,7 @@ describe("ETag and conditional requests", () => {
   const MANIFEST_ETAG = '"manifest-etag"';
 
   let bucket: R2Bucket;
-  let env: { BUCKET: R2Bucket };
+  let env: { BUCKET: R2Bucket; WEB_VITALS: AnalyticsEngineDataset; WEB_ERRORS: AnalyticsEngineDataset; ALLOWED_ORIGINS: string };
 
   beforeEach(() => {
     bucket = makeBucket({
@@ -299,7 +380,7 @@ describe("ETag and conditional requests", () => {
       [`metadata/${DATE_PATH}.json`]: fakeR2Body({ title: "test" }, "application/json", META_ETAG),
       [`manifests/${DATE_PATH}.json`]: fakeR2Body({ variants: [] }, "application/json", MANIFEST_ETAG),
     });
-    env = { BUCKET: bucket };
+    env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
   });
 
   // --- ETag present in normal responses ---
@@ -330,8 +411,12 @@ describe("ETag and conditional requests", () => {
 
   // --- 304 Not Modified when If-None-Match matches ---
 
-  it("returns 304 for /api/:date when If-None-Match matches ETag", async () => {
+  it.each([
+    { name: "GET /api/:date", method: "GET" },
+    { name: "HEAD /api/:date", method: "HEAD" },
+  ])("returns 304 for $name when If-None-Match matches ETag", async ({ method }) => {
     const req = new Request(`https://example.com/api/${DATE}`, {
+      method,
       headers: { "If-None-Match": IMAGE_ETAG },
     });
     const res = await worker.fetch(req, env);
@@ -440,7 +525,378 @@ describe("ETag and conditional requests", () => {
     const req = new Request(`https://example.com/api/${DATE}`, {
       headers: { "If-None-Match": IMAGE_ETAG },
     });
-    const res = await worker.fetch(req, { BUCKET: emptyBucket });
+    const res = await worker.fetch(req, { BUCKET: emptyBucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" });
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Telemetry endpoints — /api/vitals and /api/err
+// ---------------------------------------------------------------------------
+
+const VITALS_PAYLOAD = JSON.stringify({
+  name: "LCP",
+  value: 1234,
+  id: "v3-abc",
+  rating: "good",
+  navigationType: "navigate",
+  url: "https://kevintcoughlin.com/",
+});
+
+const ERR_PAYLOAD = JSON.stringify({
+  message: "Uncaught TypeError: foo is not a function",
+  source: "https://kevintcoughlin.com/bauhaus.js",
+  lineno: 42,
+  colno: 7,
+  stack: "TypeError: foo\n  at bar (bauhaus.js:42:7)",
+});
+
+describe("POST /api/vitals", () => {
+  let env: ReturnType<typeof makeTelemetryEnv>;
+
+  beforeEach(() => {
+    env = makeTelemetryEnv();
+  });
+
+  it("returns 204 and writes a data point for an allowed origin", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: VITALS_PAYLOAD,
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(204);
+    expect(res.body).toBeNull();
+    expect((env.WEB_VITALS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it("echoes the allowed origin in Access-Control-Allow-Origin", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: VITALS_PAYLOAD,
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED_ORIGIN);
+  });
+
+  it("returns 403 for a disallowed origin", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": "https://evil.example.com", "content-type": "application/json" },
+      body: VITALS_PAYLOAD,
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(403);
+    expect((env.WEB_VITALS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it("returns 405 for GET on /api/vitals", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "GET",
+      headers: { "Origin": ALLOWED_ORIGIN },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 204 for OPTIONS preflight with allowed origin", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "OPTIONS",
+      headers: { "Origin": ALLOWED_ORIGIN },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED_ORIGIN);
+    expect(res.headers.get("Access-Control-Allow-Methods")).toBe("POST");
+    expect(res.headers.get("Access-Control-Allow-Headers")).toBe("content-type");
+  });
+
+  it("returns 403 for OPTIONS preflight with disallowed origin", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "OPTIONS",
+      headers: { "Origin": "https://evil.example.com" },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 413 when body exceeds 4 KB", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: "x".repeat(4097),
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(413);
+  });
+
+  it("returns 400 for non-JSON body", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: "not json",
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(400);
+  });
+
+  it("writes correct blobs and doubles to WEB_VITALS", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: VITALS_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_VITALS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[0]).toBe("LCP");
+    expect(call.blobs[1]).toBe("good");
+    expect(call.blobs[2]).toBe("navigate");
+    expect(call.blobs[3]).toBe("kevintcoughlin.com");
+    expect(call.blobs[4]).toBe("/");
+    expect(call.blobs[5]).toBe("desktop");
+    expect(call.doubles[0]).toBe(1234);
+    expect(call.indexes[0]).toBe("kevintcoughlin.com");
+  });
+
+  it("classifies mobile User-Agent as 'mobile' in blobs", async () => {
+    const req = new Request("https://example.com/api/vitals", {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "content-type": "application/json",
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+      },
+      body: VITALS_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_VITALS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[5]).toBe("mobile");
+  });
+});
+
+describe("POST /api/err", () => {
+  let env: ReturnType<typeof makeTelemetryEnv>;
+
+  beforeEach(() => {
+    env = makeTelemetryEnv();
+  });
+
+  it("returns 204 and writes a data point for an allowed origin", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: ERR_PAYLOAD,
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(204);
+    expect((env.WEB_ERRORS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  it("returns 403 for a disallowed origin", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: { "Origin": "https://evil.example.com", "content-type": "application/json" },
+      body: ERR_PAYLOAD,
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(403);
+    expect((env.WEB_ERRORS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+  });
+
+  it("returns 405 for GET on /api/err", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "GET",
+      headers: { "Origin": ALLOWED_ORIGIN },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(405);
+  });
+
+  it("returns 204 for OPTIONS preflight with allowed origin", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "OPTIONS",
+      headers: { "Origin": ALLOWED_ORIGIN },
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED_ORIGIN);
+  });
+
+  it("returns 413 when body exceeds 4 KB", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: "x".repeat(4097),
+    });
+    const res = await worker.fetch(req, env);
+    expect(res.status).toBe(413);
+  });
+
+  it("writes correct blobs and doubles to WEB_ERRORS", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: { "Origin": ALLOWED_ORIGIN, "content-type": "application/json" },
+      body: ERR_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_ERRORS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[0]).toBe("Uncaught TypeError: foo is not a function");
+    expect(call.blobs[1]).toBe("https://kevintcoughlin.com/bauhaus.js");
+    expect(call.blobs[2]).toBe("kevintcoughlin.com");
+    expect(call.blobs[3]).toBe("/bauhaus.js");
+    expect(call.blobs[4]).toBe("desktop");
+    expect(call.doubles[0]).toBe(42);
+    expect(call.doubles[1]).toBe(7);
+    expect(call.indexes[0]).toBe("kevintcoughlin.com");
+  });
+
+  it("classifies mobile User-Agent as 'mobile' in blobs", async () => {
+    const req = new Request("https://example.com/api/err", {
+      method: "POST",
+      headers: {
+        "Origin": ALLOWED_ORIGIN,
+        "content-type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
+      },
+      body: ERR_PAYLOAD,
+    });
+    await worker.fetch(req, env);
+    const call = (env.WEB_ERRORS.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.blobs[4]).toBe("mobile");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// HEAD method support
+// ---------------------------------------------------------------------------
+
+describe("HEAD method support", () => {
+  const DATE = "2025-06-15";
+  const DATE_PATH = "2025/06/15";
+  const IMAGE_ETAG = '"abc123"';
+  const META_ETAG = '"meta-etag"';
+  const MANIFEST_ETAG = '"manifest-etag"';
+
+  let bucket: R2Bucket;
+  let env: { BUCKET: R2Bucket; WEB_VITALS: AnalyticsEngineDataset; WEB_ERRORS: AnalyticsEngineDataset; ALLOWED_ORIGINS: string };
+
+  beforeEach(() => {
+    bucket = makeBucket({
+      "latest.json": fakeR2Body({ date: DATE }),
+      [`stylized/${DATE_PATH}.jpg`]: fakeR2Body("jpeg-bytes", "image/jpeg", IMAGE_ETAG),
+      [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"'),
+      [`originals/${DATE_PATH}.jpg`]: fakeR2Body("orig-jpeg", "image/jpeg", '"orig-etag"'),
+      [`metadata/${DATE_PATH}.json`]: fakeR2Body({ title: "test" }, "application/json", META_ETAG),
+      [`manifests/${DATE_PATH}.json`]: fakeR2Body({ variants: [] }, "application/json", MANIFEST_ETAG),
+    });
+    env = { BUCKET: bucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" };
+  });
+
+  it("HEAD /api/today returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/today returns same Content-Type as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("Content-Type")).toBe(get.headers.get("Content-Type"));
+  });
+
+  it("HEAD /api/today returns same Cache-Control as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("Cache-Control")).toBe(get.headers.get("Cache-Control"));
+  });
+
+  it("HEAD /api/today returns same ETag as GET", async () => {
+    const get = await worker.fetch(makeRequest("/api/today"), env);
+    const head = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(head.headers.get("ETag")).toBe(get.headers.get("ETag"));
+  });
+
+  it("HEAD /api/today returns Vary: Accept", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("HEAD /api/today respects Accept header for Content-Type negotiation", async () => {
+    const res = await worker.fetch(
+      makeRequest("/api/today", { method: "HEAD", accept: "image/avif,*/*" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/avif");
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/:date returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/:date/original returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}/original`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+  });
+
+  it("HEAD /api/today.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today.json", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/today.manifest.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest("/api/today.manifest.json", { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/:date.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}.json`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD /api/:date.manifest.json returns 200 with no body", async () => {
+    const res = await worker.fetch(makeRequest(`/api/${DATE}.manifest.json`, { method: "HEAD" }), env);
+    expect(res.status).toBe(200);
+    expect(res.body).toBeNull();
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+  });
+
+  it("HEAD uses head() and never get() for image data", async () => {
+    await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    const imageKey = `stylized/${DATE_PATH}.jpg`;
+    const getCalls: string[] = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: [string]) => c[0],
+    );
+    const headCalls: string[] = (bucket.head as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c: [string]) => c[0],
+    );
+    expect(headCalls).toContain(imageKey);
+    expect(getCalls.filter((k) => k !== "latest.json")).not.toContain(imageKey);
+  });
+
+  it("HEAD returns 404 when resource is missing", async () => {
+    const emptyBucket = makeBucket({ "latest.json": fakeR2Body({ date: DATE }) });
+    const res = await worker.fetch(
+      makeRequest(`/api/${DATE}`, { method: "HEAD" }),
+      { BUCKET: emptyBucket, WEB_VITALS: makeAnalyticsDataset(), WEB_ERRORS: makeAnalyticsDataset(), ALLOWED_ORIGINS: "" },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("HEAD /api/today returns Accept-CH header", async () => {
+    const res = await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
+    expect(res.headers.get("Accept-CH")).toBe("DPR, Width, Viewport-Width");
   });
 });

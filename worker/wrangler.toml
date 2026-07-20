@@ -1,8 +1,26 @@
 name = "bauhaus"
 main = "src/index.ts"
-compatibility_date = "2026-03-13"
+compatibility_date = "2026-06-12"
 compatibility_flags = ["nodejs_compat"]
+
+[limits]
+cpu_ms = 1
+
+[observability.logs]
+enabled = true
+invocation_logs = true
 
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "bauhaus"
+
+[[analytics_engine_datasets]]
+binding = "WEB_VITALS"
+dataset = "web_vitals"
+
+[[analytics_engine_datasets]]
+binding = "WEB_ERRORS"
+dataset = "web_errors"
+
+[vars]
+ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"

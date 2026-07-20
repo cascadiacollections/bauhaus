@@ -4,7 +4,6 @@ from PIL import Image
 
 from postprocess import (
     _build_histogram_lut,
-    _cumulative_sum,
     color_harmonize,
     postprocess,
     sharpen,
@@ -30,20 +29,9 @@ def _gradient_image(size: tuple[int, int] = (256, 64)) -> Image.Image:
     return img
 
 
-# --- _cumulative_sum ---
-
-class TestCumulativeSum:
-    def test_simple(self):
-        assert _cumulative_sum([1, 2, 3]) == [1, 3, 6]
-
-    def test_empty(self):
-        assert _cumulative_sum([]) == []
-
-    def test_single(self):
-        assert _cumulative_sum([5]) == [5]
-
-    def test_zeros(self):
-        assert _cumulative_sum([0, 0, 0]) == [0, 0, 0]
+def _pixel_values(image: Image.Image) -> list[tuple[int, ...]]:
+    """Collect pixel values without relying on deprecated getdata()."""
+    return [image.getpixel((x, y)) for y in range(image.height) for x in range(image.width)]
 
 
 # --- _build_histogram_lut ---
@@ -91,7 +79,7 @@ class TestColorHarmonize:
         stylized = _solid_image((200, 100, 50))
         content = _solid_image((100, 150, 200))
         result = color_harmonize(stylized, content, strength=0.0)
-        assert list(result.getdata()) == list(stylized.getdata())
+        assert _pixel_values(result) == _pixel_values(stylized)
 
     def test_different_sizes(self):
         stylized = _solid_image((200, 100, 50), size=(64, 64))
@@ -159,7 +147,7 @@ class TestPostprocess:
             stylized, content,
             harmonize=False, do_sharpen=False, do_upscale=False,
         )
-        assert list(result.getdata()) == list(stylized.getdata())
+        assert _pixel_values(result) == _pixel_values(stylized)
 
     def test_only_harmonize(self):
         stylized = _solid_image((200, 100, 50))

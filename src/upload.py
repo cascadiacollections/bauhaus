@@ -3,11 +3,21 @@
 import json
 import os
 from datetime import UTC, date, datetime
+from functools import lru_cache
 from io import BytesIO
 
 import boto3
 
+# Content types for all supported image variant suffixes.
+_VARIANT_CONTENT_TYPES: dict[str, str] = {
+    "avif": "image/avif",
+    "webp": "image/webp",
+    "progressive.jpg": "image/jpeg",
+    "stripped.jpg": "image/jpeg",
+}
 
+
+@lru_cache(maxsize=1)
 def _get_client():
     return boto3.client(
         "s3",
@@ -18,6 +28,7 @@ def _get_client():
     )
 
 
+<<<<<<< HEAD
 _VARIANT_CONTENT_TYPES: dict[str, str] = {
     "avif": "image/avif",
     "webp": "image/webp",
@@ -42,6 +53,8 @@ def serialize_metadata(metadata: dict) -> bytes:
     return json.dumps(metadata, indent=2, sort_keys=True).encode()
 
 
+=======
+>>>>>>> origin/main
 def upload(
     original_bytes: bytes,
     stylized_bytes: bytes,
@@ -84,12 +97,6 @@ def upload(
     keys["stylized"] = key
 
     # Image variants (AVIF, WebP, progressive, stripped)
-    _all_variant_types = {
-        "avif": "image/avif",
-        "webp": "image/webp",
-        "progressive.jpg": "image/jpeg",
-        "stripped.jpg": "image/jpeg",
-    }
     if variants:
         for suffix, data in variants.items():
             key = f"stylized/{date_path}.{suffix}"
@@ -97,7 +104,7 @@ def upload(
                 Bucket=bucket,
                 Key=key,
                 Body=data,
-                ContentType=_all_variant_types.get(suffix, _VARIANT_CONTENT_TYPES.get(suffix, f"image/{suffix.split('.')[-1]}")),
+                ContentType=_VARIANT_CONTENT_TYPES.get(suffix, f"image/{suffix.split('.')[-1]}"),
                 CacheControl="public, max-age=31536000, immutable",
             )
             keys[f"stylized_{suffix.replace('.', '_')}"] = key

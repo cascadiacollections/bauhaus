@@ -6,8 +6,11 @@ from quality import (
     MIN_ASPECT_RATIO,
     MIN_DIMENSION,
     MIN_SHARPNESS,
+    aesthetic_score,
     check_aspect_ratio,
     check_resolution,
+    colorfulness_score,
+    contrast_score,
     score_image,
     sharpness_score,
 )
@@ -122,6 +125,22 @@ class TestCheckAspectRatio:
 
 
 # --- score_image ---
+
+class TestAestheticHeuristics:
+    def test_aesthetic_score_returns_dict(self):
+        img = _sharp_image((640, 480))
+        result = aesthetic_score(img)
+        assert isinstance(result, dict)
+        assert "score" in result
+        assert "method" in result
+
+    def test_colorfulness_and_contrast_are_finite(self):
+        img = _sharp_image((640, 480))
+        assert isinstance(colorfulness_score(img), float)
+        assert isinstance(contrast_score(img), float)
+        assert colorfulness_score(img) >= 0.0
+        assert contrast_score(img) >= 0.0
+
 
 class TestScoreImage:
     def test_returns_dict(self):

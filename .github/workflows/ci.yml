@@ -21,15 +21,16 @@ concurrency:
 
 jobs:
   python:
-    name: Python (${{ matrix.os }})
+    name: Python (${{ matrix.os }}, ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.13', '3.14']
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v7
         with:
@@ -37,7 +38,7 @@ jobs:
 
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --frozen
@@ -49,12 +50,23 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  podman:
+    name: Podman smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build container image
+        run: podman build -t bauhaus:test .
+      - name: Run dry-run smoke
+        run: podman run --rm bauhaus:test --dry-run --source met --skip-quality-check --max-size 1024 --variants=false
+
   worker:
-    name: Worker (typecheck)
+    name: Worker (typecheck + tests)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: worker
           sparse-checkout-cone-mode: true
@@ -72,3 +84,7 @@ jobs:
       - name: Typecheck
         working-directory: worker
         run: npx tsc --noEmit
+
+      - name: Run tests
+        working-directory: worker
+        run: npm test

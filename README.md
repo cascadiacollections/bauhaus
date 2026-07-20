@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner-dark.svg" alt="Bauhaus — Daily Stylized Art" width="640">
+  <img src="https://bauhaus.cascadiacollections.workers.dev/api/today?format=jpeg" alt="Today's Bauhaus daily art" width="640">
 </p>
 
 # Bauhaus
@@ -87,6 +87,46 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
+| `POST /api/vitals` | Ingest Web Vitals RUM (Analytics Engine) |
+| `POST /api/err` | Ingest JS error RUM (Analytics Engine) |
+
+All `GET` endpoints also support `HEAD` — returns the same response headers (including `Content-Type`, `ETag`, and `Cache-Control`) with no body. This enables browser `<link rel="preload">` validation and CDN cache priming.
+
+### Cache-Control
+
+| Endpoint pattern | `Cache-Control` |
+|-----------------|----------------|
+| `/api/today*` | `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; CDN edge holds it for up to one day |
+| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — date-specific content never changes |
+
+### Responsive image consumer snippet
+
+Use the manifest endpoint or content-negotiation directly with a `<picture>` element for optimal LCP performance:
+
+```html
+<picture>
+  <source type="image/avif" srcset="https://bauhaus.cascadiacollections.workers.dev/api/today">
+  <source type="image/webp" srcset="https://bauhaus.cascadiacollections.workers.dev/api/today">
+  <img
+    src="https://bauhaus.cascadiacollections.workers.dev/api/today"
+    alt="Daily stylized art"
+    fetchpriority="high"
+    loading="eager"
+  >
+</picture>
+```
+
+For preload hints in `<head>`:
+
+```html
+<link
+  rel="preload"
+  as="image"
+  href="https://bauhaus.cascadiacollections.workers.dev/api/today"
+  imagesrcset="https://bauhaus.cascadiacollections.workers.dev/api/today"
+  type="image/avif"
+>
+```
 
 ### Image format negotiation
 
@@ -110,9 +150,64 @@ The Worker uses `Accept` header content negotiation for the base image endpoints
 |-----------|-------------|
 | `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
 
+## Telemetry
+
+Two first-party RUM endpoints persist to [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/). Only requests from allowed origins (configured via `ALLOWED_ORIGINS`) are accepted. The Beacon API is used on the client side — both endpoints only accept `POST`.
+
+### `POST /api/vitals` — Web Vitals
+
+Wire format:
+```json
+{
+  "name": "LCP",
+  "value": 1234.5,
+  "id": "v3-1234567890-1234",
+  "rating": "good",
+  "navigationType": "navigate",
+  "url": "https://kevintcoughlin.com/"
+}
+```
+
+`name` accepts `LCP`, `INP`, `CLS`, `FCP`, or `TTFB`. `rating` is `good`, `needs-improvement`, or `poor`. Persisted to the `web_vitals` Analytics Engine dataset.
+
+### `POST /api/err` — JS Errors
+
+Wire format:
+```json
+{
+  "message": "Uncaught TypeError: ...",
+  "source": "https://kevintcoughlin.com/bauhaus.js",
+  "lineno": 42,
+  "colno": 7,
+  "stack": "..."
+}
+```
+
+`stack` is optional and truncated to 1 KB by the client before sending. Persisted to the `web_errors` Analytics Engine dataset.
+
+### Behavior
+
+| Condition | Response |
+|-----------|----------|
+| Allowed origin, valid body | `204 No Content` |
+| Disallowed or missing `Origin` | `403 Forbidden` |
+| Non-POST method | `405 Method Not Allowed` |
+| Body > 4 KB | `413 Payload Too Large` |
+| `OPTIONS` preflight (allowed origin) | `204` with CORS headers |
+
+CORS response includes `Access-Control-Allow-Origin: <echoed>`, `Access-Control-Allow-Methods: POST`, `Access-Control-Allow-Headers: content-type`.
+
+Query stored data via the Cloudflare dashboard SQL editor or:
+```bash
+wrangler analytics-engine sql 'SELECT * FROM web_vitals LIMIT 10'
+wrangler analytics-engine sql 'SELECT * FROM web_errors LIMIT 10'
+```
+
 ## Local development
 
-Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), [Bun](https://bun.sh), and [just](https://github.com/casey/just)).
+
+For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Bun, Node, Python 3.14, uv, and just.
 
 ```bash
 # Install dependencies
@@ -127,6 +222,12 @@ just test
 # Generate locally (no R2 upload)
 just generate
 
+# Generate benchmark metrics for parity tracking
+just benchmark-generate --max-size 1536
+
+# Enforce local benchmark thresholds
+just benchmark-gate
+
 # Options (extra args forwarded to src/main.py)
 just generate --source unsplash   # Unsplash landscape (default)
 just generate --source met        # Metropolitan Museum
@@ -139,12 +240,18 @@ just generate --max-size 1536     # higher processing resolution
 just
 ```
 
-### Docker
+### Docker / Podman
 
 ```bash
 just docker-build
 just docker-run
+
+# Podman-compatible equivalents
+podman build -t bauhaus .
+podman run --rm -v "$PWD/output:/app/output" --env-file .env bauhaus --dry-run
 ```
+
+Use a rootless Podman setup and a writable bind mount for `output/` if you want to keep generated files on the host.
 
 ### Worker
 
@@ -166,9 +273,15 @@ just worker-check     # typecheck
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
-| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`) |
-| `MAX_SIZE` | Max processing resolution in pixels (default: `1024`). Higher values preserve more detail but use more memory. |
-| `GENERATE_VARIANTS` | `true` (default) generate AVIF, WebP, progressive, and stripped variants alongside JPEG; `false` to disable |
+| `MEMORY_PROFILE` | `balanced` (default) or `low-memory`. `low-memory` caps `MAX_SIZE` at 1024 and disables variant generation by default to fit constrained CPU/RAM runners. |
+| `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`, or `false` in `low-memory`) |
+| `MAX_SIZE` | Max processing resolution in pixels (default: `1280`). Lower values are better for the current CPU-only/free-tier runner; `low-memory` caps this at `1024`. |
+
+### Secrets and deployment hygiene
+
+- Keep secrets in GitHub Actions secrets / local `.env` files only; never print them in logs.
+- The production workflow uses `R2_*` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
+- For local Podman runs, pass env vars via `--env-file .env` or a secret manager rather than embedding them in shell history.
 
 ## Style references
 

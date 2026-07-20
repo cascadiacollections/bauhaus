@@ -12,12 +12,14 @@ from PIL import Image
 from main import (
     build_license_details,
     build_manifest,
+    build_parser,
     build_variants,
     embed_exif,
     extract_exif,
     generate_variants,
     load_styles_manifest,
     main,
+    resolve_runtime_profile,
     strip_exif,
     STYLES_DIR,
 )
@@ -60,24 +62,41 @@ class TestStyleRotation:
             assert 0 <= idx < n
 
 
+class TestVariantsCLIArg:
+    def test_accepts_false_value(self):
+        parser = build_parser()
+        args = parser.parse_args(["--variants=false"])
+        assert args.variants is False
+
+    def test_accepts_true_value(self):
+        parser = build_parser()
+        args = parser.parse_args(["--variants=true"])
+        assert args.variants is True
+
+    def test_accepts_no_variants_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(["--no-variants"])
+        assert args.variants is False
+
+
 class TestMaxSizeCLIArg:
     """Tests for --max-size CLI flag and MAX_SIZE env var."""
 
     def test_default_max_size(self):
-        """Default --max-size should be 1024 when no env var is set."""
+        """Default --max-size should be 1920 when no env var is set."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MAX_SIZE", None)
             parser = argparse.ArgumentParser()
             parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1024")))
+                                default=int(os.environ.get("MAX_SIZE", "1920")))
             args = parser.parse_args([])
-            assert args.max_size == 1024
+            assert args.max_size == 1920
 
     def test_cli_flag_overrides_default(self):
         """--max-size flag should override the default."""
         parser = argparse.ArgumentParser()
         parser.add_argument("--max-size", type=int,
-                            default=int(os.environ.get("MAX_SIZE", "1024")))
+                            default=int(os.environ.get("MAX_SIZE", "1920")))
         args = parser.parse_args(["--max-size", "1536"])
         assert args.max_size == 1536
 
@@ -86,7 +105,7 @@ class TestMaxSizeCLIArg:
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
             parser = argparse.ArgumentParser()
             parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1024")))
+                                default=int(os.environ.get("MAX_SIZE", "1920")))
             args = parser.parse_args([])
             assert args.max_size == 1920
 
@@ -95,12 +114,24 @@ class TestMaxSizeCLIArg:
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
             parser = argparse.ArgumentParser()
             parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1024")))
+                                default=int(os.environ.get("MAX_SIZE", "1920")))
             args = parser.parse_args(["--max-size", "768"])
             assert args.max_size == 768
 
 
 # --- Variant generation ---
+
+
+class TestResolveRuntimeProfile:
+    def test_balanced_profile_keeps_settings(self):
+        max_size, variants = resolve_runtime_profile(1536, "balanced", True)
+        assert max_size == 1536
+        assert variants is True
+
+    def test_low_memory_profile_caps_resolution_and_disables_variants(self):
+        max_size, variants = resolve_runtime_profile(2048, "low-memory", True)
+        assert max_size == 1024
+        assert variants is False
 
 
 class TestGenerateVariants:
