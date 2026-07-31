@@ -20,6 +20,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # An invalid workflow file does not fail any PR check — GitHub simply
+  # refuses to run it, and scheduled runs stop being created silently.
+  # This job turns that failure mode into a red check.
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install actionlint
+        run: |
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
+          tar xzf actionlint.tar.gz actionlint
+
+      - name: Lint workflows
+        run: ./actionlint -color
+
   python:
     name: Python (${{ matrix.os }}, ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}

@@ -18,6 +18,10 @@ jobs:
       # Persistent directories on the Mac Mini avoid re-downloading each run.
       UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
       MODELS_CACHE: models/weights
+      # The `secrets` context is not available in step-level `if:` conditions,
+      # but `env` is — so gate values must be surfaced here.
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
     steps:
       - uses: actions/checkout@v7
 
@@ -38,9 +42,8 @@ jobs:
         run: python models/download_models.py
 
       - name: Import GPG key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: env.GPG_PRIVATE_KEY != ''
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
@@ -70,8 +73,6 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Self-hosted generate completed successfully." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Notify failure
         if: failure() && env.NTFY_TOPIC != ''
@@ -84,5 +85,3 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Self-hosted generate failed. Check the run logs." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
