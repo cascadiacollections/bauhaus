@@ -14,7 +14,8 @@ def generate_variants(
 
     Returns a dict mapping variant suffix (e.g. ``"avif"``, ``"webp"``,
     ``"progressive.jpg"``, ``"stripped.jpg"``) to the encoded bytes.
-    AVIF is silently skipped when the codec is unavailable.
+    AVIF is skipped with a warning on stderr when the codec is unavailable;
+    the other variants are always produced.
 
     Args:
         image: PIL Image to encode.

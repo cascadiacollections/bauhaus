@@ -12,7 +12,7 @@
     },
     "ghcr.io/devcontainers/features/common-utils:2": {}
   },
-  "postCreateCommand": "cd ${containerWorkspaceFolder} && uv sync && cd worker && npm ci",
+  "postCreateCommand": "cd ${containerWorkspaceFolder} && uv sync && uv run --script models/download_models.py && cd worker && npm ci",
   "customizations": {
     "vscode": {
       "settings": {

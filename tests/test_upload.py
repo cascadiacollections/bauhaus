@@ -1,10 +1,24 @@
 """Tests for upload.py — key generation, metadata enrichment, and S3 calls."""
 
 import json
+import re
 from datetime import UTC, date, datetime
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
-from upload import prepare_metadata_for_upload, serialize_metadata, upload
+import pytest
+from botocore.exceptions import ClientError
+from helpers import make_r2_client
+
+from upload import (
+    IMMUTABLE_CACHE,
+    LATEST_CACHE,
+    AlreadyPublishedError,
+    prepare_metadata_for_upload,
+    serialize_metadata,
+    upload,
+    utc_today,
+)
 
 
 class TestUpload:
@@ -16,7 +30,7 @@ class TestUpload:
         stripped_bytes: bytes | None = None,
     ):
         today = today or date(2025, 7, 14)
-        mock_client = MagicMock()
+        mock_client = make_r2_client()
 
         with patch("upload._get_client", return_value=mock_client):
             keys = upload(
@@ -131,7 +145,7 @@ class TestUploadVariants:
 
     def _run_upload(self, variants=None, manifest=None, today=None):
         today = today or date(2025, 7, 14)
-        mock_client = MagicMock()
+        mock_client = make_r2_client()
         with patch("upload._get_client", return_value=mock_client):
             keys = upload(
                 original_bytes=b"original-data",
@@ -193,7 +207,7 @@ class TestUploadMetadataSig:
     def _run_upload(self, metadata_sig=None, today=None):
         from datetime import date
         today = today or date(2025, 7, 14)
-        mock_client = MagicMock()
+        mock_client = make_r2_client()
         with patch("upload._get_client", return_value=mock_client):
             keys = upload(
                 original_bytes=b"original-data",
@@ -256,7 +270,7 @@ class TestUploadMetadataSig:
         )
         expected_bytes = serialize_metadata(prepared)
 
-        mock_client = MagicMock()
+        mock_client = make_r2_client()
         with patch("upload._get_client", return_value=mock_client):
             upload(
                 original_bytes=b"original-data",
@@ -281,7 +295,7 @@ class TestStrippedVariantNotDuplicated:
     default path used to PUT the same key twice."""
 
     def _upload(self, **kwargs):
-        mock_client = MagicMock()
+        mock_client = make_r2_client()
         with patch("upload._get_client", return_value=mock_client):
             keys = upload(
                 b"original", b"stylized", {"title": "t"},
@@ -321,3 +335,146 @@ class TestStrippedVariantNotDuplicated:
         )
         for suffix in ("avif", "webp", "progressive.jpg"):
             assert f"stylized/2026/01/02.{suffix}" in put_keys
+
+
+class TestWriteOnceGuard:
+    """upload() refuses to rewrite a date that has already been published.
+
+    Date keys are served with `immutable` and a one-year TTL. Rewriting them
+    leaves caches holding bytes they will never revalidate, and because uploads
+    land key-by-key a client can end up with one artwork's image beside another
+    artwork's metadata, permanently.
+    """
+
+    def _upload(self, client, **kwargs):
+        with patch("upload._get_client", return_value=client):
+            return upload(
+                original_bytes=b"original-data",
+                stylized_bytes=b"stylized-data",
+                metadata={"title": "Test Art"},
+                bucket="test-bucket",
+                today=date(2026, 1, 2),
+                **kwargs,
+            )
+
+    def test_unpublished_date_uploads(self):
+        client = make_r2_client(published=False)
+        keys = self._upload(client)
+        assert keys["metadata"] == "metadata/2026/01/02.json"
+
+    def test_published_date_raises(self):
+        client = make_r2_client(published=True)
+        with pytest.raises(AlreadyPublishedError, match="2026-01-02"):
+            self._upload(client)
+
+    def test_published_date_writes_nothing(self):
+        """The guard must run before the first PUT, not partway through."""
+        client = make_r2_client(published=True)
+        with pytest.raises(AlreadyPublishedError):
+            self._upload(client)
+        assert client.put_object.call_count == 0
+
+    def test_overwrite_allows_republish(self):
+        client = make_r2_client(published=True)
+        keys = self._upload(client, overwrite=True)
+        assert keys["metadata"] == "metadata/2026/01/02.json"
+
+    def test_overwrite_skips_the_existence_check(self):
+        client = make_r2_client(published=True)
+        self._upload(client, overwrite=True)
+        assert client.head_object.call_count == 0
+
+    def test_guard_checks_the_metadata_key_for_the_run_date(self):
+        client = make_r2_client(published=False)
+        self._upload(client)
+        assert client.head_object.call_args.kwargs["Key"] == "metadata/2026/01/02.json"
+        assert client.head_object.call_args.kwargs["Bucket"] == "test-bucket"
+
+    def test_non_404_client_error_propagates(self):
+        """A 403 means we could not determine the answer — do not publish over it."""
+        client = make_r2_client(published=False)
+        client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"},
+             "ResponseMetadata": {"HTTPStatusCode": 403}},
+            "HeadObject",
+        )
+        with pytest.raises(ClientError):
+            self._upload(client)
+        assert client.put_object.call_count == 0
+
+
+class TestCacheControlHeaders:
+    def test_date_keys_are_immutable_and_shared_cacheable(self):
+        client = make_r2_client()
+        with patch("upload._get_client", return_value=client):
+            upload(
+                original_bytes=b"o", stylized_bytes=b"s",
+                metadata={"title": "T"}, bucket="b", today=date(2026, 1, 2),
+                variants={"webp": b"w"}, stripped_bytes=b"x",
+                manifest={"date": "2026-01-02"}, metadata_sig=b"sig",
+            )
+        for call in client.put_object.call_args_list:
+            if call.kwargs["Key"] == "latest.json":
+                continue
+            assert call.kwargs["CacheControl"] == IMMUTABLE_CACHE
+
+    def test_immutable_header_matches_the_worker_constant(self):
+        """The Worker prefers R2's stored header, so a drift here is what ships.
+
+        worker/src/index.ts declares the same string; if these diverge the
+        Worker's constant becomes unreachable for pipeline-written objects and
+        the served header is silently whatever upload.py wrote.
+        """
+        worker_src = (
+            Path(__file__).resolve().parent.parent / "worker" / "src" / "index.ts"
+        ).read_text(encoding="utf-8")
+        match = re.search(r'const IMMUTABLE_CACHE = "([^"]+)"', worker_src)
+        assert match, "IMMUTABLE_CACHE not found in worker/src/index.ts"
+        assert match.group(1) == IMMUTABLE_CACHE
+
+    def test_latest_pointer_is_short_lived(self):
+        client = make_r2_client()
+        with patch("upload._get_client", return_value=client):
+            upload(
+                original_bytes=b"o", stylized_bytes=b"s",
+                metadata={"title": "T"}, bucket="b", today=date(2026, 1, 2),
+            )
+        latest = [c for c in client.put_object.call_args_list
+                  if c.kwargs["Key"] == "latest.json"][0]
+        assert latest.kwargs["CacheControl"] == LATEST_CACHE
+
+
+class TestUtcToday:
+    """The publish date must not depend on the runner's timezone."""
+
+    def test_uses_utc_not_local_time(self):
+        """22:00 UTC is already the next day in UTC+... and still 'today' here."""
+        with patch("upload.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 1, 2, 22, 0, tzinfo=UTC)
+            assert utc_today() == date(2026, 1, 2)
+        mock_dt.now.assert_called_once_with(UTC)
+
+    def test_pacific_evening_still_reports_the_utc_date(self):
+        """8 PM PT on Jan 1 is 04:00 UTC on Jan 2 — the publish date is Jan 2.
+
+        This is the self-hosted Mac Mini case: local date.today() there would
+        say Jan 1 and overwrite the previous day's keys.
+        """
+        with patch("upload.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 1, 2, 4, 0, tzinfo=UTC)
+            assert utc_today() == date(2026, 1, 2)
+
+    def test_upload_defaults_to_utc_today(self):
+        client = make_r2_client()
+        with patch("upload._get_client", return_value=client), \
+             patch("upload.utc_today", return_value=date(2026, 3, 4)):
+            keys = upload(
+                original_bytes=b"o", stylized_bytes=b"s",
+                metadata={"title": "T"}, bucket="b",
+            )
+        assert keys["stylized"] == "stylized/2026/03/04.jpg"
+
+    def test_prepare_metadata_defaults_to_utc_today(self):
+        with patch("upload.utc_today", return_value=date(2026, 3, 4)):
+            prepared = prepare_metadata_for_upload({"title": "T"})
+        assert prepared["date"] == "2026-03-04"

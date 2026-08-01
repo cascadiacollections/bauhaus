@@ -902,3 +902,86 @@ describe("HEAD method support", () => {
     expect(res.headers.get("Accept-CH")).toBe("DPR, Width, Viewport-Width");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cache-Control contract
+// ---------------------------------------------------------------------------
+
+describe("cache headers", () => {
+  const TODAY = "2026-01-02";
+
+  function env(objects: Record<string, R2ObjectBody | undefined>) {
+    return {
+      BUCKET: makeBucket({
+        "latest.json": fakeR2Body({ date: TODAY }),
+        ...objects,
+      }),
+      WEB_VITALS: { writeDataPoint() {} } as unknown as AnalyticsEngineDataset,
+      WEB_ERRORS: { writeDataPoint() {} } as unknown as AnalyticsEngineDataset,
+      ALLOWED_ORIGINS: "",
+    };
+  }
+
+  // s-maxage must stay under the 24h publish interval. At 86400 an edge PoP
+  // that filled shortly before the 04:00 UTC run kept serving the previous
+  // day's artwork for another full day.
+  it("keeps /api/today shared-cacheable for less than a publish interval", async () => {
+    const e = env({ "stylized/2026/01/02.jpg": fakeR2Body("img", "image/jpeg") });
+    const res = await worker.fetch(makeRequest("/api/today"), e);
+    const cc = res.headers.get("Cache-Control")!;
+
+    const sMaxAge = Number(/s-maxage=(\d+)/.exec(cc)?.[1]);
+    expect(sMaxAge).toBeLessThan(86400);
+    expect(cc).not.toContain("immutable");
+  });
+
+  // The Worker prefers the header R2 stored on the object, so its own constant
+  // is only a fallback. Fixtures used to leave httpMetadata.cacheControl unset,
+  // which meant the tests exercised the fallback exclusively and a divergence
+  // between the pipeline's header and this one could not be observed.
+  it("prefers the Cache-Control stored on the object for dated routes", async () => {
+    // Deliberately unlike IMMUTABLE_CACHE: if this matched the fallback, the
+    // assertion would hold whichever branch ran and prove nothing.
+    const stored = "public, max-age=42, s-maxage=42";
+    const obj = fakeR2Body("img", "image/jpeg");
+    (obj as unknown as { httpMetadata: R2HTTPMetadata }).httpMetadata = {
+      contentType: "image/jpeg",
+      cacheControl: stored,
+    } as R2HTTPMetadata;
+
+    const e = env({ "stylized/2026/01/02.jpg": obj });
+    const res = await worker.fetch(makeRequest(`/api/${TODAY}`), e);
+    expect(res.headers.get("Cache-Control")).toBe(stored);
+  });
+
+  it("falls back to its own immutable constant when R2 stored none", async () => {
+    const e = env({ "stylized/2025/12/25.jpg": fakeR2Body("img", "image/jpeg") });
+    const res = await worker.fetch(makeRequest("/api/2025-12-25"), e);
+    expect(res.headers.get("Cache-Control")).toContain("immutable");
+  });
+
+  // A 304 with no Cache-Control lets a cache substitute its own heuristic for
+  // how long the stored copy stays fresh, and no Vary loses the fact that the
+  // resource is negotiated on Accept.
+  it("carries Cache-Control and Vary on a 304", async () => {
+    const obj = fakeR2Body("img", "image/jpeg", '"abc123"');
+    const e = env({ "stylized/2026/01/02.jpg": obj });
+    const res = await worker.fetch(
+      new Request("https://example.com/api/today", { headers: { "If-None-Match": '"abc123"' } }),
+      e,
+    );
+    expect(res.status).toBe(304);
+    expect(res.headers.get("Cache-Control")).toBeTruthy();
+    expect(res.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("uses the today policy on a 304 for /api/today, not the immutable one", async () => {
+    const obj = fakeR2Body("img", "image/jpeg", '"abc123"');
+    const e = env({ "stylized/2026/01/02.jpg": obj });
+    const res = await worker.fetch(
+      new Request("https://example.com/api/today", { headers: { "If-None-Match": '"abc123"' } }),
+      e,
+    );
+    expect(res.headers.get("Cache-Control")).not.toContain("immutable");
+  });
+});

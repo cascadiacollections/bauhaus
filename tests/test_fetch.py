@@ -1,6 +1,19 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
-from fetch import Artwork, fetch_artwork, is_landscape, is_preferred_subject, is_safe_title
+from unittest.mock import MagicMock, patch
+
+import pytest
+import requests
+
+import fetch
+from fetch import (
+    _FETCHERS,
+    Artwork,
+    fetch_artwork,
+    is_landscape,
+    is_preferred_subject,
+    is_safe_title,
+)
 
 # --- is_safe_title ---
 
@@ -154,15 +167,18 @@ class TestArtworkToMetadata:
 # --- fetch_artwork source registration ---
 
 class TestFetchArtworkSources:
-    def test_all_sources_valid(self):
-        fetchers = {"unsplash", "met", "artic"}
-        # Verify all expected sources are registered by checking fetch_artwork doesn't raise ValueError
-        for source in fetchers:
-            try:
-                fetch_artwork(source, landscapes_only=True)
-            except (RuntimeError, Exception):
-                # Network errors are fine — we just want to confirm no ValueError
-                pass
+    def test_all_sources_registered(self):
+        """Every documented source resolves to a fetcher.
+
+        Asserts against the registry rather than calling fetch_artwork(): the
+        previous version called it for real — up to 10 live HTTP requests per
+        source, from CI — inside `except (RuntimeError, Exception)`, which
+        swallows the very ValueError it claimed to be checking for and so could
+        not fail for its stated reason.
+        """
+        assert set(_FETCHERS) == {"unsplash", "met", "artic"}
+        for fetcher in _FETCHERS.values():
+            assert callable(fetcher)
 
     def test_unknown_source_raises(self):
         import pytest
@@ -218,3 +234,59 @@ class TestCheckQualityOrientation:
         passed, reason = _check_quality(b"not an image", landscape_orientation=True)
         assert passed is False
         assert "decode" in reason
+
+
+class TestRetryBackoff:
+    """Network retries back off; content rejections do not.
+
+    Without a delay a source that is down absorbed all ten attempts in about
+    two seconds, so the retry loop gave the upstream no chance to recover.
+    """
+
+    def test_delay_grows_with_attempt(self):
+        with patch("fetch.random.random", return_value=1.0):
+            delays = [fetch._retry_delay(i) for i in range(4)]
+        assert delays == sorted(delays)
+        assert delays[0] < delays[-1]
+
+    def test_delay_is_capped(self):
+        with patch("fetch.random.random", return_value=1.0):
+            assert fetch._retry_delay(50) <= fetch.RETRY_BACKOFF_MAX_SEC
+
+    def test_delay_is_jittered(self):
+        """Jitter keeps a shared outage from resynchronising every retry."""
+        with patch("fetch.random.random", return_value=0.0):
+            low = fetch._retry_delay(3)
+        with patch("fetch.random.random", return_value=1.0):
+            high = fetch._retry_delay(3)
+        assert low < high
+
+    def test_no_sleep_after_the_final_attempt(self):
+        """The last failure raises immediately — nothing left to wait for."""
+        with patch("fetch.time.sleep") as sleep:
+            fetch._sleep_before_retry(fetch.MAX_ATTEMPTS - 1)
+        assert sleep.call_count == 0
+
+    def test_sleeps_between_earlier_attempts(self):
+        with patch("fetch.time.sleep") as sleep:
+            fetch._sleep_before_retry(0)
+        assert sleep.call_count == 1
+        assert sleep.call_args.args[0] > 0
+
+    def test_network_failure_backs_off_then_raises(self):
+        """Ten failed attempts, nine waits, one clean RuntimeError."""
+        with patch("fetch._get", side_effect=requests.RequestException("down")), \
+             patch("fetch.time.sleep") as sleep, \
+             pytest.raises(RuntimeError, match="after 10 attempts"):
+            fetch.fetch_met()
+        assert sleep.call_count == fetch.MAX_ATTEMPTS - 1
+
+    def test_content_rejection_does_not_sleep(self):
+        """An empty search result is not an outage — retry straight away."""
+        empty = MagicMock()
+        empty.json.return_value = {"objectIDs": []}
+        with patch("fetch._get", return_value=empty), \
+             patch("fetch.time.sleep") as sleep, \
+             pytest.raises(RuntimeError):
+            fetch.fetch_met()
+        assert sleep.call_count == 0

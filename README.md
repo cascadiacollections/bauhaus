@@ -84,11 +84,11 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/today.json` | Today's metadata (title, artist, source, license, variants) |
 | `GET /api/today.manifest.json` | Variant manifest (srcset / responsive helper) |
 | `GET /api/YYYY-MM-DD` | Stylized image for a specific date (content-negotiated) |
-| `GET /api/YYYY-MM-DD.avif` | Stylized image (AVIF) for a specific date |
-| `GET /api/YYYY-MM-DD.webp` | Stylized image (WebP) for a specific date |
 | `GET /api/YYYY-MM-DD/original` | Original unstylized image |
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
+| `GET /api/YYYY-MM-DD.json.sig` | Detached PGP signature over that date's metadata JSON (404 when signing is off) |
+| `GET /api/health` | Publish freshness for uptime monitoring — `200` when current, `503` when stale |
 | `POST /api/vitals` | Ingest Web Vitals RUM (Analytics Engine) |
 | `POST /api/err` | Ingest JS error RUM (Analytics Engine) |
 
@@ -98,8 +98,8 @@ All `GET` endpoints also support `HEAD` — returns the same response headers (i
 
 | Endpoint pattern | `Cache-Control` |
 |-----------------|----------------|
-| `/api/today*` | `public, max-age=300, s-maxage=86400, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; CDN edge holds it for up to one day |
-| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — date-specific content never changes |
+| `/api/today*` | `public, max-age=300, s-maxage=3600, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; the edge TTL stays below the 24h publish interval so a PoP cannot serve yesterday's artwork past the next run |
+| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed |
 
 ### Responsive image consumer snippet
 
@@ -144,13 +144,7 @@ If the preferred format is missing, it falls back to JPEG.
 
 All image responses include a `Vary: Accept` header for correct caching.
 
-The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Explicit `.avif` and `.webp` extensions are also supported.
-
-### Query parameters
-
-| Parameter | Description |
-|-----------|-------------|
-| `progressive=true` | Serve the progressive JPEG variant for faster perceived load on slow networks. Falls back to the baseline image if the progressive variant is not available. |
+The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Use the `format` query parameter above to override it explicitly; an unrecognised value is rejected with `400` rather than silently negotiated.
 
 ## Telemetry
 
@@ -234,12 +228,13 @@ just benchmark-generate --max-size 1536
 just benchmark-gate
 
 # Options (extra args forwarded to src/main.py)
-just generate --source unsplash   # Unsplash landscape (default)
-just generate --source met        # Metropolitan Museum
+just generate --source met        # Metropolitan Museum (default)
 just generate --source artic      # Art Institute of Chicago
+just generate --source unsplash   # Unsplash — needs UNSPLASH_ACCESS_KEY
 just generate --alpha 0.5         # subtle style (0.0-1.0)
 just generate --any-subject       # disable landscape filter
 just generate --max-size 1536     # higher processing resolution
+just generate --overwrite         # republish a date already in R2
 
 # List all available recipes
 just
@@ -281,6 +276,9 @@ just worker-check     # typecheck
 | `MEMORY_PROFILE` | `balanced` (default) or `low-memory`. `low-memory` caps `MAX_SIZE` at 1024 and disables variant generation by default to fit constrained CPU/RAM runners. |
 | `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`, or `false` in `low-memory`) |
 | `MAX_SIZE` | Max processing resolution in pixels (default: `1280`). Lower values are better for the current CPU-only/free-tier runner; `low-memory` caps this at `1024`. |
+| `METRICS_OUT` | Write run timing/resource metrics JSON to this path (also `--metrics-out`). Used by the benchmark workflow. |
+| `METRICS_LABEL` | Optional label recorded in the metrics JSON to annotate benchmark runs (also `--metrics-label`). |
+| `NTFY_TOPIC` | [ntfy.sh](https://ntfy.sh) topic for success/failure notifications. Set as a repository secret; notification steps are skipped when unset. |
 
 ### Secrets and deployment hygiene
 
@@ -301,9 +299,20 @@ To turn it on, set three repository secrets:
 
 | Secret | What it is |
 |--------|-----------|
-| `GPG_PRIVATE_KEY` | ASCII-armoured private key. Gates the import step — signing stays off until this is set. |
-| `GPG_KEY_ID` | Key ID or fingerprint, passed to `gpg --local-user`. Optional if the imported key is the default. |
-| `GPG_PASSPHRASE` | Passphrase, if the key has one. |
+| `GPG_PRIVATE_KEY` | ASCII-armoured private key. Gates the workflow's import step, and on its own is enough to enable signing. |
+| `GPG_KEY_ID` | Key ID or fingerprint, passed to `gpg --local-user`. Optional when the imported key is the only secret key present. |
+| `GPG_PASSPHRASE` | Passphrase, if the key has one. Omit for a passphrase-less key. |
+
+Setting any one of the three turns signing on. The signature covers the canonical JSON bytes that are uploaded, byte for byte.
+
+Verify a published day:
+
+```bash
+BASE=https://bauhaus.cascadiacollections.workers.dev
+curl -sf "$BASE/api/2026-01-02.json"     -o metadata.json
+curl -sf "$BASE/api/2026-01-02.json.sig" -o metadata.json.sig
+gpg --verify metadata.json.sig metadata.json
+```
 
 Generating and exporting a signing key:
 
@@ -321,17 +330,7 @@ gpg --armor --export-secret-keys <KEY_ID>
 gpg --armor --export <KEY_ID>
 ```
 
-Verifying a published day:
-
-```bash
-curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json
-curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json.sig
-gpg --verify 2026-08-01.json.sig 2026-08-01.json
-```
-
-Note that the signature covers the metadata JSON only, not the image bytes, and
-that `.json.sig` is not currently exposed as a Worker route — it exists in R2 at
-`metadata/<date>.json.sig` but the API has no handler for it yet.
+The signature covers the metadata JSON only, not the image bytes.
 
 ## Style references
 

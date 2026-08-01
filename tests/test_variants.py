@@ -41,8 +41,8 @@ class TestGenerateVariants:
         variants = generate_variants(img)
         assert len(variants["webp"]) < jpeg_size
 
-    def test_empty_dict_on_error(self, monkeypatch):
-        """If both formats fail, returns whatever succeeded."""
+    def test_failed_encoders_are_omitted_not_fatal(self, monkeypatch):
+        """A failing encoder drops that variant; the rest still encode."""
 
         original_save = Image.Image.save
 

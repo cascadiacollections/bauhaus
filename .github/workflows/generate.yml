@@ -9,6 +9,11 @@ on:
         type: choice
         default: met
         options: [met, artic, unsplash]
+      overwrite:
+        description: "Republish today even if it already exists (breaks immutable caches)"
+        required: false
+        type: boolean
+        default: false
   schedule:
     - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
 
@@ -43,10 +48,13 @@ jobs:
           path: .venv
           key: venv-${{ runner.os }}-py3.14-${{ hashFiles('uv.lock') }}
 
+      # Keyed on the download script so that changing a pinned checksum (or the
+      # release URL) evicts weights cached under the old pins. A constant key
+      # can never invalidate, which would pin a bad cache entry forever.
       - uses: actions/cache@v6
         with:
           path: models/weights
-          key: adain-models-v1
+          key: adain-models-${{ hashFiles('models/download_models.py') }}
 
       - name: Install dependencies
         run: uv sync --frozen --no-dev
@@ -67,9 +75,13 @@ jobs:
       # available via the workflow_dispatch input (its licence is not CC0,
       # so those runs produce source-dependent output).
       - name: Generate and upload
-        run: uv run python src/main.py --source "${SOURCE}"
+        run: |
+          uv run python src/main.py --source "${SOURCE}" ${OVERWRITE:+--overwrite}
         env:
           SOURCE: ${{ inputs.source || 'met' }}
+          # Empty unless the dispatch input is checked; ${VAR:+--overwrite}
+          # then expands to nothing, so scheduled runs never pass the flag.
+          OVERWRITE: ${{ inputs.overwrite && '1' || '' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

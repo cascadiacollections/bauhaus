@@ -113,8 +113,10 @@ class TestCheckAspectRatio:
         img = _solid_image((0, 0, 0), (100, 4000))
         assert check_aspect_ratio(img) is False
 
-    def test_zero_height(self):
-        # Edge case — 100×1 gives ratio 100 which exceeds MAX_ASPECT_RATIO
+    def test_extreme_ratio_rejected(self):
+        # 100x1 gives ratio 100, far above MAX_ASPECT_RATIO. Named for what
+        # it tests: PIL cannot construct a zero-height image, so the h == 0
+        # guard in check_aspect_ratio is unreachable from here.
         img = _solid_image((0, 0, 0), (100, 1))
         assert check_aspect_ratio(img) is False
 
