@@ -4,6 +4,7 @@ import os
 import random
 import re
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from io import BytesIO
@@ -51,6 +52,28 @@ SKIP_SUBJECT_PATTERN = re.compile(
 )
 
 MAX_ATTEMPTS = 10
+
+# Backoff between *network* retries. Without it a source that is down absorbs
+# all ten attempts in about two seconds and the run dies having given the
+# upstream no time to recover — the opposite of what a retry loop is for.
+# Content rejections (NSFW title, quality gate) do not sleep: those consume an
+# attempt but nothing upstream needs to recover.
+RETRY_BACKOFF_BASE_SEC = 1.5
+RETRY_BACKOFF_MAX_SEC = 20.0
+
+
+def _retry_delay(attempt: int) -> float:
+    """Exponential backoff with jitter for retry number ``attempt`` (0-based)."""
+    capped = min(RETRY_BACKOFF_BASE_SEC * (2 ** attempt), RETRY_BACKOFF_MAX_SEC)
+    # Jitter spreads retries so a shared outage does not resynchronise them.
+    return capped * (0.5 + random.random() / 2)
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    """Sleep between network retries, skipping the wait after the last one."""
+    if attempt >= MAX_ATTEMPTS - 1:
+        return
+    time.sleep(_retry_delay(attempt))
 
 
 @dataclass(slots=True)
@@ -196,6 +219,7 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
             )
         except requests.RequestException as e:
             print(f"Met attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(attempt)
 
     raise RuntimeError(f"Failed to fetch from Met Museum after {MAX_ATTEMPTS} attempts")
 
@@ -258,13 +282,20 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
             )
         except requests.RequestException as e:
             print(f"AIC attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(attempt)
 
     raise RuntimeError(f"Failed to fetch from AIC after {MAX_ATTEMPTS} attempts")
 
 
 def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random landscape photo from Unsplash."""
-    access_key = os.environ["UNSPLASH_ACCESS_KEY"]
+    try:
+        access_key = os.environ["UNSPLASH_ACCESS_KEY"]
+    except KeyError:
+        raise RuntimeError(
+            "UNSPLASH_ACCESS_KEY is not set. Unsplash needs an API key; the "
+            "CC0 museum sources do not — try --source met or --source artic."
+        ) from None
     for attempt in range(MAX_ATTEMPTS):
         try:
             params: dict = {}
@@ -312,6 +343,7 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
             )
         except requests.RequestException as e:
             print(f"Unsplash attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(attempt)
 
     raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
 

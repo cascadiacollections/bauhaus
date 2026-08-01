@@ -44,6 +44,22 @@ const FORMAT_CONTENT_TYPE: Record<ImageFormat, string> = {
   jpeg: "image/jpeg",
 };
 
+/** Values `?format=` accepts. Anything else is a client error, not a fallback. */
+const FORMAT_PARAMS = new Set(["avif", "webp", "jpeg", "auto"]);
+
+/**
+ * True when `?format=` is present but not a value we support.
+ *
+ * Silently negotiating past a bad value made `?format=png` and `?format=jpg`
+ * indistinguishable from `?format=auto`, so a typo in a caller's code looked
+ * like it worked and quietly served something else.
+ */
+export function hasInvalidFormat(url: URL): boolean {
+  const param = url.searchParams.get("format");
+  if (param === null) return false;
+  return !FORMAT_PARAMS.has(param.toLowerCase());
+}
+
 export function negotiateFormat(request: Request, url: URL): ImageFormat {
   const param = url.searchParams.get("format")?.toLowerCase();
   if (param === "avif") return "avif";
@@ -311,11 +327,26 @@ function etagMatches(ifNoneMatch: string, httpEtag: string): boolean {
     .some((e) => normalizeEtag(e) === target);
 }
 
-/** Cache-control for date-specific resources — immutable since content never changes. */
+/**
+ * Cache-control for date-specific resources — immutable because the pipeline
+ * publishes a date once and refuses to rewrite it (see _assert_unpublished in
+ * src/upload.py). Kept byte-identical to IMMUTABLE_CACHE in src/upload.py: R2
+ * stores that value on the object and it is preferred over this constant, so
+ * this is only the fallback for objects written by something other than the
+ * pipeline.
+ */
 const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable";
 
-/** Cache-control for /api/today* — short-lived since it resolves to a new date each day. */
-const TODAY_CACHE = "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800";
+/**
+ * Cache-control for /api/today* — this resolves to a new date every morning.
+ *
+ * s-maxage must stay below the publish interval. At the old 86400 an edge PoP
+ * that filled its cache shortly before the 04:00 UTC run kept serving the
+ * previous day's artwork for a further 24 hours, so viewers behind that PoP
+ * never saw a day's art at all. One hour bounds the staleness while still
+ * absorbing the overwhelming majority of traffic.
+ */
+const TODAY_CACHE = "public, max-age=300, s-maxage=3600, stale-while-revalidate=604800";
 
 /** Builds the shared response headers for image endpoints. */
 function buildImageHeaders(
@@ -357,18 +388,36 @@ function jsonResponse(obj: R2ObjectBody, today = false): Response {
   return new Response(obj.body, { headers });
 }
 
-function notModified(etag: string): Response {
+function notModified(etag: string, today = false): Response {
+  // A 304 that omits Cache-Control and Vary invites caches to fall back to
+  // their own heuristics for how long the stored copy stays fresh, and to
+  // ignore that these resources are content-negotiated on Accept. Both must
+  // match what the corresponding 200 would have said.
   return new Response(null, {
     status: 304,
-    headers: { "ETag": etag, ...corsHeaders() },
+    headers: {
+      "ETag": etag,
+      "Cache-Control": today ? TODAY_CACHE : IMMUTABLE_CACHE,
+      "Vary": "Accept",
+      ...corsHeaders(),
+    },
+  });
+}
+
+/** JSON error with CORS — the single shape every non-telemetry failure uses. */
+function errorResponse(status: number, msg: string, cacheControl = "no-store"): Response {
+  return new Response(JSON.stringify({ error: msg }), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": cacheControl,
+      ...corsHeaders(),
+    },
   });
 }
 
 function notFound(msg: string): Response {
-  return new Response(JSON.stringify({ error: msg }), {
-    status: 404,
-    headers: { "Content-Type": "application/json", ...corsHeaders() },
-  });
+  return errorResponse(404, msg);
 }
 
 /**
@@ -393,7 +442,7 @@ async function serveImage(
     const headResult = await headImageObject(bucket, basePath, format, progressive, strip);
     if (!headResult) return notFound(notFoundMsg);
     if (ifNoneMatch && etagMatches(ifNoneMatch, headResult.head.httpEtag)) {
-      return notModified(headResult.head.httpEtag);
+      return notModified(headResult.head.httpEtag, today);
     }
     if (isHead) {
       const headers = buildImageHeaders(
@@ -435,7 +484,7 @@ async function serveJson(
     const head = await bucket.head(key);
     if (!head) return notFound(notFoundMsg);
     if (ifNoneMatch && etagMatches(ifNoneMatch, head.httpEtag)) {
-      return notModified(head.httpEtag);
+      return notModified(head.httpEtag, today);
     }
     if (isHead) {
       const headers: Record<string, string> = {
@@ -456,16 +505,47 @@ async function serveJson(
   return jsonResponse(obj, today);
 }
 
+/**
+ * Serves a non-JSON, non-image object (currently the detached PGP signature)
+ * with the same conditional-request handling as the other endpoints.
+ */
+async function serveBinary(
+  request: Request,
+  bucket: R2Bucket,
+  key: string,
+  contentType: string,
+  notFoundMsg: string,
+  isHead = false,
+): Promise<Response> {
+  const ifNoneMatch = request.headers.get("If-None-Match");
+
+  const headers = (etag: string | undefined): Record<string, string> => {
+    const h: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": IMMUTABLE_CACHE,
+      ...corsHeaders(),
+    };
+    if (etag) h["ETag"] = etag;
+    return h;
+  };
+
+  if (isHead || ifNoneMatch) {
+    const head = await bucket.head(key);
+    if (!head) return notFound(notFoundMsg);
+    if (ifNoneMatch && etagMatches(ifNoneMatch, head.httpEtag)) {
+      return notModified(head.httpEtag);
+    }
+    if (isHead) return new Response(null, { status: 200, headers: headers(head.httpEtag) });
+  }
+
+  const obj = await bucket.get(key);
+  if (!obj) return notFound(notFoundMsg);
+  return new Response(obj.body, { headers: headers(obj.httpEtag) });
+}
+
 /** 503 for upstream failures — same JSON+CORS shape as notFound(). */
 function unavailable(msg: string): Response {
-  return new Response(JSON.stringify({ error: msg }), {
-    status: 503,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": "no-store",
-      ...corsHeaders(),
-    },
-  });
+  return errorResponse(503, msg);
 }
 
 /** Raised when latest.json is missing, to separate "not published yet" from a genuine R2 fault. */
@@ -507,7 +587,49 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const isHead = request.method === "HEAD";
 
     if (request.method !== "GET" && !isHead) {
-      return new Response("Method not allowed", { status: 405 });
+      return errorResponse(405, "Method not allowed");
+    }
+
+    // GET /api/health → publish freshness, for an external uptime monitor.
+    //
+    // The failure mode with no signal at all is the cron simply not running:
+    // GitHub disables scheduled workflows after 60 days of repo inactivity,
+    // and a skipped or failed schedule produces no run, so the ntfy hooks in
+    // generate.yml never fire. Staleness measured at the serving end catches
+    // that, plus R2 write failures and publish bugs, in one probe.
+    if (path === "/api/health") {
+      let today: string;
+      try {
+        today = await getToday(env.BUCKET);
+      } catch (err) {
+        // Never published, or R2 is down — either way this probe must report
+        // unhealthy rather than the 404 the generic handler would produce.
+        const reason = err instanceof NoLatestError ? "no artwork published" : "storage unavailable";
+        return new Response(JSON.stringify({ status: "unhealthy", error: reason }), {
+          status: 503,
+          headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...corsHeaders() },
+        });
+      }
+      const publishedMs = Date.parse(`${today}T00:00:00Z`);
+      const staleDays = Number.isNaN(publishedMs)
+        ? null
+        : Math.floor((Date.now() - publishedMs) / 86_400_000);
+      const healthy = staleDays !== null && staleDays <= 1;
+      return new Response(
+        JSON.stringify({ status: healthy ? "ok" : "stale", date: today, stale_days: staleDays }),
+        {
+          status: healthy ? 200 : 503,
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            ...corsHeaders(),
+          },
+        },
+      );
+    }
+
+    if (hasInvalidFormat(url)) {
+      return errorResponse(400, "Unsupported format. Use avif, webp, jpeg, or auto");
     }
 
     const format = negotiateFormat(request, url);
@@ -534,6 +656,23 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const manifestMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.manifest\.json$/);
     if (manifestMatch) {
       return serveJson(request, env.BUCKET, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`, isHead);
+    }
+
+    // GET|HEAD /api/:date.json.sig → detached PGP signature over the metadata
+    //
+    // The pipeline has always been able to upload this object, but nothing
+    // served it, so a published signature could never actually be fetched and
+    // checked — signing was unverifiable by construction.
+    const sigMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.json\.sig$/);
+    if (sigMatch) {
+      return serveBinary(
+        request,
+        env.BUCKET,
+        `metadata/${datePath(sigMatch[1])}.json.sig`,
+        "application/pgp-signature",
+        `No signature for ${sigMatch[1]}`,
+        isHead,
+      );
     }
 
     // GET|HEAD /api/:date.json → metadata for date

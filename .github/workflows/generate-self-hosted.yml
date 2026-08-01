@@ -8,6 +8,12 @@ name: Generate Daily Art (Self-Hosted Mac Mini)
 # hand when you want the Mac Mini's MPS acceleration.
 on:
   workflow_dispatch:
+    inputs:
+      overwrite:
+        description: "Republish today even if it already exists (breaks immutable caches)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,9 +25,10 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 15
     env:
-      # Persistent directories on the Mac Mini avoid re-downloading each run.
-      UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
-      MODELS_CACHE: models/weights
+      # Persistent uv cache on the Mac Mini avoids re-downloading each run.
+      # $HOME rather than ~: `env:` values are not shell-expanded, so a tilde
+      # here would be taken literally and create a directory named "~".
+      UV_CACHE_DIR: ${{ github.workspace }}/../bauhaus-uv-cache
       # The `secrets` context is not available in step-level `if:` conditions,
       # but `env` is — so gate values must be surfaced here.
       GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -55,8 +62,12 @@ jobs:
 
       # CC0 museum source — see the note in generate.yml.
       - name: Generate and upload
-        run: uv run python src/main.py --source met
+        run: |
+          uv run python src/main.py --source met ${OVERWRITE:+--overwrite}
         env:
+          # Publishing is write-once, so a dispatch on a day generate.yml has
+          # already run needs this checked to proceed.
+          OVERWRITE: ${{ inputs.overwrite && '1' || '' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

@@ -1,6 +1,5 @@
 """Tests for main.py — styles manifest, style rotation, CLI args, and metadata helpers."""
 
-import argparse
 import os
 from io import BytesIO
 from unittest.mock import patch
@@ -76,42 +75,36 @@ class TestVariantsCLIArg:
 
 
 class TestMaxSizeCLIArg:
-    """Tests for --max-size CLI flag and MAX_SIZE env var."""
+    """Tests for --max-size CLI flag and MAX_SIZE env var.
+
+    These build the parser under test via build_parser(). They previously
+    constructed a throwaway ArgumentParser with the default duplicated inline,
+    so they asserted 1920 while the real default was 1280 and would have passed
+    with --max-size deleted from the CLI entirely.
+    """
 
     def test_default_max_size(self):
-        """Default --max-size should be 1920 when no env var is set."""
+        """Default --max-size should be 1280 when no env var is set."""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MAX_SIZE", None)
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1920")))
-            args = parser.parse_args([])
-            assert args.max_size == 1920
+            args = build_parser().parse_args([])
+            assert args.max_size == 1280
 
     def test_cli_flag_overrides_default(self):
         """--max-size flag should override the default."""
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--max-size", type=int,
-                            default=int(os.environ.get("MAX_SIZE", "1920")))
-        args = parser.parse_args(["--max-size", "1536"])
+        args = build_parser().parse_args(["--max-size", "1536"])
         assert args.max_size == 1536
 
     def test_env_var_sets_default(self):
         """MAX_SIZE env var should set the default when no flag is passed."""
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1920")))
-            args = parser.parse_args([])
+            args = build_parser().parse_args([])
             assert args.max_size == 1920
 
     def test_cli_flag_overrides_env_var(self):
         """--max-size flag should override MAX_SIZE env var."""
         with patch.dict(os.environ, {"MAX_SIZE": "1920"}):
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--max-size", type=int,
-                                default=int(os.environ.get("MAX_SIZE", "1920")))
-            args = parser.parse_args(["--max-size", "768"])
+            args = build_parser().parse_args(["--max-size", "768"])
             assert args.max_size == 768
 
 

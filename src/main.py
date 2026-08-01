@@ -8,7 +8,7 @@ import random
 import socket
 import sys
 import time
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from io import BytesIO
 from math import gcd
 from pathlib import Path
@@ -22,7 +22,13 @@ from postprocess import postprocess
 from quality import aesthetic_score, score_image
 from sign_metadata import sign_metadata
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
-from upload import prepare_metadata_for_upload, serialize_metadata, upload
+from upload import (
+    AlreadyPublishedError,
+    prepare_metadata_for_upload,
+    serialize_metadata,
+    upload,
+    utc_today,
+)
 from variants import generate_variants
 
 STYLES_DIR = Path(__file__).resolve().parent.parent / "styles"
@@ -258,7 +264,7 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
     if not styles:
         raise RuntimeError("No styles found in styles.json and STYLE_MODE=curated")
 
-    idx = date.today().timetuple().tm_yday % len(styles)
+    idx = utc_today().timetuple().tm_yday % len(styles)
     style_info = styles[idx]
 
     style_path = STYLES_DIR / style_info["filename"]
@@ -281,11 +287,15 @@ def resolve_runtime_profile(max_size: int, memory_profile: str, generate_variant
 
 
 def ensure_models():
-    """Download model weights if not present (cross-platform)."""
-    weights_dir = Path(__file__).resolve().parent.parent / "models" / "weights"
-    if (weights_dir / "vgg_normalised.pth").exists() and (weights_dir / "decoder.pth").exists():
-        return
+    """Download and verify model weights (cross-platform).
 
+    Always delegates to download_models.py rather than short-circuiting on file
+    existence: the script checksums what is already on disk and re-downloads on
+    mismatch. An existence check alone cannot tell a complete file from a
+    truncated one, and both generate workflows restore models/weights from an
+    Actions cache — so a single corrupt download would otherwise be cached and
+    replayed into every subsequent run with no way to self-heal.
+    """
     import subprocess
     script = Path(__file__).resolve().parent.parent / "models" / "download_models.py"
     subprocess.run([sys.executable, str(script)], check=True)
@@ -305,8 +315,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate daily stylized artwork")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch and stylize locally, skip R2 upload")
-    parser.add_argument("--source", default="unsplash", choices=["unsplash", "met", "artic"],
-                        help="Art source (default: unsplash)")
+    # Default to a CC0 museum source: it needs no API key, so `just generate`
+    # works on a fresh clone, and it matches what both generate workflows run.
+    parser.add_argument("--source", default="met", choices=["unsplash", "met", "artic"],
+                        help="Art source (default: met)")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Republish a date that already exists in R2 "
+                             "(date keys are served immutable — see docs)")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
     parser.add_argument("--alpha-mode", default="uniform",
@@ -524,7 +539,7 @@ def main():
     # Add structured license details and variant descriptors
     metadata["license_details"] = build_license_details(metadata)
     # Capture today once to avoid day-boundary skew between manifest and upload
-    today = date.today()
+    today = utc_today()
     today_str = today.isoformat()
     metadata["variants"] = build_variants(
         stylized, stylized_bytes,
@@ -567,7 +582,12 @@ def main():
     metadata_sig: bytes | None = None
     gpg_key_id = os.environ.get("GPG_KEY_ID")
     gpg_passphrase = os.environ.get("GPG_PASSPHRASE")
-    if gpg_key_id or gpg_passphrase:
+    # GPG_PRIVATE_KEY is what the workflows gate the key *import* on, and the
+    # README's `gpg --quick-generate-key ... never` recipe produces a
+    # passphrase-less default key — no key id, no passphrase. Gating signing on
+    # key id or passphrase alone meant following the README exactly imported a
+    # key and then silently never signed with it.
+    if gpg_key_id or gpg_passphrase or os.environ.get("GPG_PRIVATE_KEY"):
         print("Signing metadata with PGP key...")
         metadata_sig = sign_metadata(
             metadata_json.decode("utf-8"),
@@ -624,14 +644,19 @@ def main():
     # 7. Upload to R2
     t = time.perf_counter()
     print("Uploading to R2...")
-    keys = upload(
-        original_bytes, stylized_bytes, prepared_metadata,
-        manifest=manifest,
-        today=today,
-        variants=variants,
-        stripped_bytes=stripped_bytes,
-        metadata_sig=metadata_sig,
-    )
+    try:
+        keys = upload(
+            original_bytes, stylized_bytes, prepared_metadata,
+            manifest=manifest,
+            today=today,
+            variants=variants,
+            stripped_bytes=stripped_bytes,
+            metadata_sig=metadata_sig,
+            overwrite=args.overwrite,
+        )
+    except AlreadyPublishedError as exc:
+        print(f"\n✗ {exc}", file=sys.stderr)
+        sys.exit(1)
     record_timing("upload", t)
     print("Uploaded:")
     for name, key in keys.items():
