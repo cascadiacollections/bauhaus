@@ -2,10 +2,16 @@ FROM python:3.14-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Bytecode-compile on install so the first run doesn't pay for it, and copy
-# rather than hardlink since the cache and the venv are on different layers.
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+# Copy rather than hardlink, since the cache and the venv land on different
+# layers. Deliberately NOT setting UV_COMPILE_BYTECODE: this image runs one
+# batch generation and exits, so shaving import time off a process that then
+# spends minutes in style transfer does not repay compiling all of torch on
+# every build.
+#
+# only-system: the base image already pins the interpreter this project wants,
+# so uv should use it rather than downloading a managed CPython of its own.
+ENV UV_LINK_MODE=copy \
+    UV_PYTHON_PREFERENCE=only-system
 
 WORKDIR /app
 
