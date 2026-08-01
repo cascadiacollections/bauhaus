@@ -76,12 +76,19 @@ jobs:
       # so those runs produce source-dependent output).
       - name: Generate and upload
         run: |
-          uv run python src/main.py --source "${SOURCE}" ${OVERWRITE:+--overwrite}
+          uv run python src/main.py --source "${SOURCE}" \
+            ${OVERWRITE:+--overwrite} ${SKIP_IF_PUBLISHED:+--skip-if-published}
         env:
           SOURCE: ${{ inputs.source || 'met' }}
           # Empty unless the dispatch input is checked; ${VAR:+--overwrite}
           # then expands to nothing, so scheduled runs never pass the flag.
           OVERWRITE: ${{ inputs.overwrite && '1' || '' }}
+          # Scheduled runs only. A dispatch after 17:00 PT lands on tomorrow's
+          # UTC date, so the next morning's cron finds the day already
+          # published — a no-op, not a fault, and it must not go red or page.
+          # A manual dispatch that collides still fails loudly: there the
+          # operator asked for a publish and did not get one.
+          SKIP_IF_PUBLISHED: ${{ github.event_name == 'schedule' && '1' || '' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

@@ -56,6 +56,9 @@ class _Harness:
         self.sign = MagicMock(return_value=b"-----BEGIN PGP SIGNATURE-----")
         self.fetch = MagicMock(return_value=_artwork())
         self.ensure_models = MagicMock()
+        # Default: the date is free. Give it a side_effect of
+        # AlreadyPublishedError to exercise the preflight rejection.
+        self.assert_unpublished = MagicMock()
 
     def __enter__(self):
         style_img = Image.new("RGB", (256, 256), (200, 60, 40))
@@ -78,6 +81,7 @@ class _Harness:
             patch.object(main_mod, "ensure_models", self.ensure_models),
             patch.object(main_mod, "StyleTransfer", MagicMock(return_value=transfer)),
             patch.object(main_mod, "upload", self.upload),
+            patch.object(main_mod, "assert_unpublished", self.assert_unpublished),
             patch.object(main_mod, "sign_metadata", self.sign),
             patch.object(main_mod, "utc_today", return_value=date(2026, 1, 2)),
         ]
@@ -149,6 +153,89 @@ class TestMainOrchestration:
             with pytest.raises(SystemExit) as exc:
                 main_mod.main()
         assert exc.value.code == 1
+
+
+class TestPreflight:
+    """The write-once check runs before the work, not after it.
+
+    upload() still holds the authoritative check — it is what narrows the race
+    window — but reaching it costs a fetch, a style transfer and a full variant
+    encode. On a collision all of that is thrown away.
+    """
+
+    def test_preflight_runs_before_the_fetch(self):
+        with _Harness([]) as h:
+            h.assert_unpublished.side_effect = AlreadyPublishedError("2026-01-02 …")
+            with pytest.raises(SystemExit):
+                main_mod.main()
+        assert h.fetch.call_count == 0
+        assert h.upload.call_count == 0
+
+    def test_preflight_uses_the_same_date_as_the_upload(self):
+        """One date for both checks, or a run across midnight UTC publishes over itself."""
+        with _Harness([]) as h:
+            main_mod.main()
+        assert h.assert_unpublished.call_args.args[0] == date(2026, 1, 2)
+        assert h.upload.call_args.kwargs["today"] == date(2026, 1, 2)
+
+    def test_overwrite_skips_the_preflight(self):
+        """--overwrite means publish regardless; asking R2 first proves nothing."""
+        with _Harness(["--overwrite"]) as h:
+            main_mod.main()
+        assert h.assert_unpublished.call_count == 0
+        assert h.upload.call_count == 1
+
+    def test_dry_run_never_touches_r2(self, tmp_path):
+        """A dry run has no R2 credentials to preflight with."""
+        with _Harness(["--dry-run"]) as h, patch.object(main_mod, "OUTPUT_DIR", tmp_path):
+            main_mod.main()
+        assert h.assert_unpublished.call_count == 0
+
+
+class TestSkipIfPublished:
+    """A scheduled run that finds the date published is a no-op, not a failure.
+
+    The morning after publishing became write-once, an evening dispatch had
+    already claimed the UTC date and the cron run went red — a red X and a
+    high-priority page for a day whose art existed and was being served.
+    """
+
+    def test_skip_exits_zero_on_preflight_collision(self):
+        with _Harness(["--skip-if-published"]) as h:
+            h.assert_unpublished.side_effect = AlreadyPublishedError("2026-01-02 …")
+            with pytest.raises(SystemExit) as exc:
+                main_mod.main()
+        assert exc.value.code == 0
+        assert h.upload.call_count == 0
+
+    def test_skip_exits_zero_when_upload_loses_the_race(self):
+        """The preflight can pass and a concurrent generator still win."""
+        with _Harness(["--skip-if-published"]) as h:
+            h.upload.side_effect = AlreadyPublishedError("2026-01-02 …")
+            with pytest.raises(SystemExit) as exc:
+                main_mod.main()
+        assert exc.value.code == 0
+
+    def test_without_the_flag_a_collision_still_fails(self):
+        """A manual dispatch asked for a publish; not getting one is an error."""
+        with _Harness([]) as h:
+            h.assert_unpublished.side_effect = AlreadyPublishedError("2026-01-02 …")
+            with pytest.raises(SystemExit) as exc:
+                main_mod.main()
+        assert exc.value.code == 1
+
+    def test_skip_does_not_suppress_an_unpublished_run(self):
+        """The flag only changes the collision path — a free date still publishes."""
+        with _Harness(["--skip-if-published"]) as h:
+            main_mod.main()
+        assert h.upload.call_count == 1
+
+    def test_overwrite_and_skip_are_mutually_exclusive(self):
+        """Contradictory intents: publish over it, versus stand down for it."""
+        with _Harness(["--overwrite", "--skip-if-published"]):
+            with pytest.raises(SystemExit) as exc:
+                main_mod.main()
+        assert exc.value.code == 2
 
     def test_signed_bytes_are_the_uploaded_bytes(self):
         """The signature must cover exactly the JSON that lands in R2."""

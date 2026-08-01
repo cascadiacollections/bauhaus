@@ -8,10 +8,11 @@ import random
 import socket
 import sys
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import BytesIO
 from math import gcd
 from pathlib import Path
+from typing import NoReturn
 
 from PIL import Image
 from PIL.ExifTags import IFD
@@ -24,6 +25,7 @@ from sign_metadata import sign_metadata
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import (
     AlreadyPublishedError,
+    assert_unpublished,
     prepare_metadata_for_upload,
     serialize_metadata,
     upload,
@@ -301,6 +303,28 @@ def ensure_models():
     subprocess.run([sys.executable, str(script)], check=True)
 
 
+def _exit_already_published(
+    exc: AlreadyPublishedError, today: date, skip_if_published: bool,
+) -> NoReturn:
+    """Terminate a run whose date is already in R2.
+
+    A scheduled run that finds the date published has nothing to do and nothing
+    to report: the day's art exists, which is the whole outcome the schedule
+    exists to produce. Exiting non-zero there turns a benign no-op into a red
+    run and a high-priority failure notification — which is exactly what
+    happened the first morning after publishing became write-once, because an
+    evening dispatch the night before had already claimed the UTC date.
+
+    A manual dispatch is the opposite case. There the collision is a surprise
+    the operator asked to be told about, so it stays an error.
+    """
+    if skip_if_published:
+        print(f"↩ {today.isoformat()} is already published — nothing to do.")
+        sys.exit(0)
+    print(f"\n✗ {exc}", file=sys.stderr)
+    sys.exit(1)
+
+
 def _parse_cli_bool(value: str | None) -> bool:
     """Parse CLI booleans from --flag, --flag=true, or --flag=false."""
     if value is None:
@@ -319,9 +343,16 @@ def build_parser() -> argparse.ArgumentParser:
     # works on a fresh clone, and it matches what both generate workflows run.
     parser.add_argument("--source", default="met", choices=["unsplash", "met", "artic"],
                         help="Art source (default: met)")
-    parser.add_argument("--overwrite", action="store_true",
-                        help="Republish a date that already exists in R2 "
-                             "(date keys are served immutable — see docs)")
+    # Contradictory intents: one insists on publishing over an existing date,
+    # the other stands down for it. Passing both is an operator error.
+    published = parser.add_mutually_exclusive_group()
+    published.add_argument("--overwrite", action="store_true",
+                           help="Republish a date that already exists in R2 "
+                                "(date keys are served immutable — see docs)")
+    published.add_argument("--skip-if-published", action="store_true",
+                           help="Exit 0 without generating when the date is already "
+                                "published, instead of failing. For scheduled runs, "
+                                "where an existing date is a no-op rather than a fault.")
     parser.add_argument("--alpha", type=float, default=0.8,
                         help="Style strength 0.0-1.0 (default: 0.8)")
     parser.add_argument("--alpha-mode", default="uniform",
@@ -419,6 +450,21 @@ def main():
         args.memory_profile,
         args.variants,
     )
+
+    # Capture the run date once, before anything reads it. The preflight below,
+    # the manifest and the upload all have to agree: a run straddling midnight
+    # UTC would otherwise check one date for existing keys and publish another.
+    today = utc_today()
+    today_str = today.isoformat()
+
+    # 0. Preflight the write-once check — see upload.assert_unpublished().
+    if not args.dry_run and not args.overwrite:
+        t = time.perf_counter()
+        try:
+            assert_unpublished(today)
+        except AlreadyPublishedError as exc:
+            _exit_already_published(exc, today, args.skip_if_published)
+        record_timing("preflight", t)
 
     # 1. Fetch CC0 artwork
     quality_gate = not args.skip_quality_check
@@ -538,9 +584,6 @@ def main():
 
     # Add structured license details and variant descriptors
     metadata["license_details"] = build_license_details(metadata)
-    # Capture today once to avoid day-boundary skew between manifest and upload
-    today = utc_today()
-    today_str = today.isoformat()
     metadata["variants"] = build_variants(
         stylized, stylized_bytes,
         original_img, original_bytes,
@@ -655,8 +698,9 @@ def main():
             overwrite=args.overwrite,
         )
     except AlreadyPublishedError as exc:
-        print(f"\n✗ {exc}", file=sys.stderr)
-        sys.exit(1)
+        # Reachable despite the preflight: a concurrent generator can publish
+        # the date in the window between the two checks.
+        _exit_already_published(exc, today, args.skip_if_published)
     record_timing("upload", t)
     print("Uploaded:")
     for name, key in keys.items():
