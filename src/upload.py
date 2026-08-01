@@ -4,7 +4,6 @@ import json
 import os
 from datetime import UTC, date, datetime
 from functools import lru_cache
-from io import BytesIO
 
 import boto3
 
@@ -87,9 +86,18 @@ def upload(
     )
     keys["stylized"] = key
 
-    # Image variants (AVIF, WebP, progressive, stripped)
+    # Image variants (AVIF, WebP, progressive, stripped).
+    #
+    # generate_variants() always emits a "stripped.jpg" entry, and main.py also
+    # builds stripped_bytes independently when --strip is on (both default on).
+    # Both used to be written to stylized/<date>.stripped.jpg, so every run did
+    # a redundant encode and a duplicate PUT to a key it had just written.
+    # An explicit stripped_bytes wins; the variant copy is skipped.
     if variants:
+        skip = {"stripped.jpg"} if stripped_bytes is not None else set()
         for suffix, data in variants.items():
+            if suffix in skip:
+                continue
             key = f"stylized/{date_path}.{suffix}"
             client.put_object(
                 Bucket=bucket,

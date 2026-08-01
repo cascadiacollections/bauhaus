@@ -1,9 +1,13 @@
 name: Generate Daily Art (Self-Hosted Mac Mini)
 
+# Dispatch only, deliberately. This workflow and generate.yml both used to run
+# at 04:00 UTC, writing the same R2 keys for the same date from two different
+# artworks. Because the uploads interleave key-by-key rather than atomically,
+# a losing race could leave the served image and its metadata describing
+# different artworks. generate.yml is the scheduled generator; run this one by
+# hand when you want the Mac Mini's MPS acceleration.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day)
 
 permissions:
   contents: read

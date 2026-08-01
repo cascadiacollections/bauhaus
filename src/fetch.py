@@ -5,7 +5,7 @@ import random
 import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from io import BytesIO
 
 import requests
@@ -96,7 +96,12 @@ _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})
 
 
-def _get(url: str, timeout: int = 30, headers: dict | None = None, params: dict | None = None) -> requests.Response:
+def _get(
+    url: str,
+    timeout: int = 30,
+    headers: dict | None = None,
+    params: dict | None = None,
+) -> requests.Response:
     resp = _session.get(url, timeout=timeout, headers=headers, params=params)
     resp.raise_for_status()
     return resp
@@ -318,7 +323,11 @@ _FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
 }
 
 
-def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
+def fetch_artwork(
+    source: str = "unsplash",
+    landscapes_only: bool = True,
+    quality_gate: bool = True,
+) -> Artwork:
     """Fetch artwork from the specified source.
 
     Args:

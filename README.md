@@ -288,6 +288,51 @@ just worker-check     # typecheck
 - The production workflow uses `R2_*` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
 - For local Podman runs, pass env vars via `--env-file .env` or a secret manager rather than embedding them in shell history.
 
+### Metadata signing (PGP)
+
+Each day's `metadata/<date>.json` can be published alongside a detached
+signature at `metadata/<date>.json.sig`, letting consumers verify the metadata
+came from this pipeline. **Signing is currently dormant** — the workflow skips
+the `Import GPG key` step whenever `GPG_PRIVATE_KEY` is unset, and
+`sign_metadata()` returns `None` rather than failing, so runs succeed silently
+without a signature.
+
+To turn it on, set three repository secrets:
+
+| Secret | What it is |
+|--------|-----------|
+| `GPG_PRIVATE_KEY` | ASCII-armoured private key. Gates the import step — signing stays off until this is set. |
+| `GPG_KEY_ID` | Key ID or fingerprint, passed to `gpg --local-user`. Optional if the imported key is the default. |
+| `GPG_PASSPHRASE` | Passphrase, if the key has one. |
+
+Generating and exporting a signing key:
+
+```bash
+# Create a signing-only key (no expiry prompt in batch mode)
+gpg --quick-generate-key "Bauhaus <you@example.com>" ed25519 sign never
+
+# Fingerprint → GPG_KEY_ID
+gpg --list-secret-keys --keyid-format=long
+
+# Private key → GPG_PRIVATE_KEY (paste the whole armoured block)
+gpg --armor --export-secret-keys <KEY_ID>
+
+# Public key — publish this so consumers can verify
+gpg --armor --export <KEY_ID>
+```
+
+Verifying a published day:
+
+```bash
+curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json
+curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json.sig
+gpg --verify 2026-08-01.json.sig 2026-08-01.json
+```
+
+Note that the signature covers the metadata JSON only, not the image bytes, and
+that `.json.sig` is not currently exposed as a Worker route — it exists in R2 at
+`metadata/<date>.json.sig` but the API has no handler for it yet.
+
 ## Style references
 
 10 curated CC0 paintings shipped in `styles/`, spanning Impressionism, Post-Impressionism, Japonisme, and Pointillism:

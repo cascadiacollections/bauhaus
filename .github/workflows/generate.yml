@@ -12,9 +12,19 @@ on:
   schedule:
     - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
 
+permissions:
+  contents: read
+
+# One generation at a time: a manual dispatch must not race the scheduled run
+# for the same date's R2 keys.
+concurrency:
+  group: generate-daily-art
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # Job-level env: the `secrets` context is not available in step-level `if:`
     # conditions, but `env` is — so gate values must be surfaced here.
     env:
@@ -23,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
           python-version: '3.14'

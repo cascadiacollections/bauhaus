@@ -2,12 +2,9 @@
 
 import json
 import subprocess
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from sign_metadata import sign_metadata
-
 
 _SAMPLE_METADATA = {
     "title": "Sunset Over Mountains",

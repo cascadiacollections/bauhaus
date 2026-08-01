@@ -10,7 +10,6 @@ from postprocess import (
     upscale,
 )
 
-
 # --- helpers ---
 
 def _solid_image(color: tuple[int, int, int], size: tuple[int, int] = (64, 64)) -> Image.Image:
