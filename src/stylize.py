@@ -10,8 +10,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision import transforms
 from PIL import Image
+from torchvision import transforms
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models" / "weights"
 

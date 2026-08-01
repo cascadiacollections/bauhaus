@@ -8,14 +8,14 @@ import random
 import socket
 import sys
 import time
-from datetime import date
-from datetime import datetime, timezone
+from datetime import UTC, date, datetime
 from io import BytesIO
 from math import gcd
 from pathlib import Path
 
 from PIL import Image
-from PIL.ExifTags import TAGS as EXIF_TAGS, IFD
+from PIL.ExifTags import IFD
+from PIL.ExifTags import TAGS as EXIF_TAGS
 
 from fetch import fetch_artwork
 from postprocess import postprocess
@@ -53,43 +53,65 @@ def _write_metrics(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def extract_exif(image_bytes: bytes) -> dict[str, str]:
-    """Extract EXIF metadata from image bytes into a plain dict.
+# Tags republished in the public metadata JSON served at /api/<date>.json.
+#
+# This is an allowlist, not a denylist, and deliberately so. The previous
+# implementation copied every tag it could find — including the GPS IFD, which
+# put the capture coordinates of Unsplash photographs into a public endpoint
+# while the service simultaneously advertised an EXIF-stripped "privacy-safe"
+# image variant. Anything not named here is dropped, so a tag added by a future
+# camera or Pillow version cannot leak by default.
+PUBLISHED_EXIF_TAGS = frozenset({
+    # Provenance / description
+    "ImageDescription", "Artist", "Copyright",
+    # Camera and lens
+    "Make", "Model", "LensMake", "LensModel", "BodySerialNumber",
+    # Exposure
+    "ExposureTime", "FNumber", "ISOSpeedRatings", "PhotographicSensitivity",
+    "FocalLength", "FocalLengthIn35mmFilm", "ExposureProgram", "ExposureBiasValue",
+    "MeteringMode", "Flash", "WhiteBalance",
+    # Image properties
+    "Orientation", "XResolution", "YResolution", "ResolutionUnit",
+    "ColorSpace", "ExifImageWidth", "ExifImageHeight",
+    "DateTimeOriginal", "DateTimeDigitized", "Software",
+})
 
-    Returns a dict mapping human-readable tag names to their string values.
-    Binary or non-serialisable values are skipped.
+# Serial numbers identify a specific physical camera and can link otherwise
+# unrelated photographs to one owner. Kept out of the allowlist above; listed
+# here so the omission reads as deliberate rather than forgotten.
+_DELIBERATELY_OMITTED = frozenset({"BodySerialNumber", "LensSerialNumber", "CameraOwnerName"})
+PUBLISHED_EXIF_TAGS = PUBLISHED_EXIF_TAGS - _DELIBERATELY_OMITTED
+
+
+def extract_exif(image_bytes: bytes) -> dict[str, str]:
+    """Extract publishable EXIF metadata from image bytes into a plain dict.
+
+    Returns a dict mapping human-readable tag names to their string values,
+    restricted to ``PUBLISHED_EXIF_TAGS``. Binary values, unknown tags, and the
+    entire GPS IFD are dropped — the result is uploaded to a public endpoint.
     """
     with Image.open(BytesIO(image_bytes)) as img:
         exif_data = img.getexif()
         result: dict[str, str] = {}
-        for tag_id, value in exif_data.items():
-            tag_name = EXIF_TAGS.get(tag_id, str(tag_id))
-            if isinstance(value, bytes):
-                continue
-            result[tag_name] = str(value)
 
-        # Try to extract EXIF IFD (shutter speed, ISO, etc.)
-        try:
-            exif_ifd = exif_data.get_ifd(IFD.Exif)
-            for tag_id, value in exif_ifd.items():
-                tag_name = EXIF_TAGS.get(tag_id, str(tag_id))
+        def collect(items) -> None:
+            for tag_id, value in items:
+                tag_name = EXIF_TAGS.get(tag_id)
+                if tag_name not in PUBLISHED_EXIF_TAGS:
+                    continue
                 if isinstance(value, bytes):
                     continue
                 result[tag_name] = str(value)
+
+        collect(exif_data.items())
+
+        # EXIF sub-IFD (shutter speed, ISO, lens, etc.)
+        try:
+            collect(exif_data.get_ifd(IFD.Exif).items())
         except KeyError:
             pass
 
-        # Try to extract GPS IFD
-        try:
-            from PIL.ExifTags import GPSTAGS
-            gps_ifd = exif_data.get_ifd(IFD.GPSInfo)
-            for tag_id, value in gps_ifd.items():
-                tag_name = GPSTAGS.get(tag_id, str(tag_id))
-                if isinstance(value, bytes):
-                    continue
-                result[f"GPS{tag_name}"] = str(value)
-        except KeyError:
-            pass
+        # The GPS IFD is intentionally never read.
 
     return result
 
@@ -316,7 +338,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--memory-profile", choices=["balanced", "low-memory"],
                         default=memory_profile,
-                        help="Runtime profile for constrained CPUs/RAM (default: balanced, env: MEMORY_PROFILE)")
+                        help="Runtime profile for constrained CPUs/RAM "
+                             "(default: balanced, env: MEMORY_PROFILE)")
     parser.add_argument("--max-size", type=int,
                         default=int(os.environ.get("MAX_SIZE", "1280")),
                         help="Max processing resolution in px (default: 1280, env: MAX_SIZE)")
@@ -350,7 +373,7 @@ def main():
             return
 
         payload = {
-            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "generated_at_utc": datetime.now(UTC).isoformat(),
             "hostname": socket.gethostname(),
             "platform": platform.platform(),
             "python_version": platform.python_version(),
@@ -569,7 +592,7 @@ def main():
         metadata_path.write_bytes(metadata_json)
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
-        print(f"\nDry run complete:")
+        print("\nDry run complete:")
         print(f"  Original:  {original_path}")
         print(f"  Stylized:  {stylized_path}")
         print(f"  Metadata:  {metadata_path}")

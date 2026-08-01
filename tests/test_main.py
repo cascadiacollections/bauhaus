@@ -1,10 +1,8 @@
 """Tests for main.py — styles manifest, style rotation, CLI args, and metadata helpers."""
 
 import argparse
-import json
 import os
 from io import BytesIO
-from pathlib import Path
 from unittest.mock import patch
 
 from PIL import Image
@@ -18,10 +16,8 @@ from main import (
     extract_exif,
     generate_variants,
     load_styles_manifest,
-    main,
     resolve_runtime_profile,
     strip_exif,
-    STYLES_DIR,
 )
 
 

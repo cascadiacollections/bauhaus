@@ -4,13 +4,18 @@ version = "0.1.0"
 description = "Daily stylized art service — AdaIN style transfer on Unsplash and public domain museum artwork"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+# 3.14 everywhere: the Dockerfile builds from python:3.14-slim, both generate
+# workflows run 3.14, and .mise.toml pins 3.14. Nothing runs 3.13.
+requires-python = ">=3.14"
 dependencies = [
     "torch>=2.13.0,<3.0",
     "torchvision>=0.28.0,<1.0",
     "pillow>=12.3.0,<13.0",
     "boto3>=1.43.51,<2.0",
     "requests>=2.34.2,<3.0",
+    # Imported directly by src/quality.py — previously only resolved as a
+    # transitive dependency of torch/torchvision.
+    "numpy>=2.4.0,<3.0",
 ]
 
 [dependency-groups]
@@ -24,3 +29,35 @@ constraint-dependencies = ["setuptools>=83.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py314"
+exclude = [".venv", "output", "models/weights"]
+
+[tool.ruff.lint]
+# Pyflakes + pycodestyle errors + isort + bugbear + pyupgrade, plus
+# flake8-bandit's security checks (the source already carried an
+# `# noqa: S310` that nothing was enforcing).
+select = ["E", "F", "I", "B", "S", "UP"]
+
+# Suppressed with reasons, rather than sprinkling noqa at ~13 call sites. Each
+# of these is a true positive for a security-sensitive codebase and a false
+# one here; revisit if that ever stops being true.
+ignore = [
+    # random picks which artwork and style to use. Nothing here is a secret,
+    # a token, or a nonce.
+    "S311",
+    # Every subprocess call in this repo passes a fixed argument list with
+    # shell=False: gpg in sign_metadata, and sys.executable in ensure_models.
+    "S603",
+    # Deliberate: optional EXIF sub-IFDs are absent far more often than not,
+    # and their absence is not an event worth logging on every run.
+    "S110",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",  # assert is the point of a test
+    "S106",  # "hardcoded password" is a dummy GPG passphrase in a fixture
+]

@@ -8,7 +8,6 @@ from io import BytesIO
 
 from PIL import Image
 
-
 # --- helpers ---
 
 def _make_image(size=(64, 64)):

@@ -10,9 +10,6 @@ from itertools import accumulate
 from PIL import Image, ImageFilter
 
 
-
-
-
 def _build_histogram_lut(source_hist: list[int], reference_hist: list[int]) -> list[int]:
     """Build a lookup table to match source histogram to reference histogram.
 
@@ -67,7 +64,9 @@ def color_harmonize(
     c_channels = content_rgb.split()
 
     matched_channels: list[Image.Image] = []
-    for s_ch, c_ch in zip(s_channels, c_channels):
+    # strict=True: both images are RGB by construction, so a length mismatch
+    # would mean a conversion silently failed rather than a channel to skip.
+    for s_ch, c_ch in zip(s_channels, c_channels, strict=True):
         lut = _build_histogram_lut(s_ch.histogram(), c_ch.histogram())
         matched_channels.append(s_ch.point(lut))
 

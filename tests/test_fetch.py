@@ -1,7 +1,6 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
-from fetch import Artwork, fetch_artwork, is_safe_title, is_preferred_subject, is_landscape
-
+from fetch import Artwork, fetch_artwork, is_landscape, is_preferred_subject, is_safe_title
 
 # --- is_safe_title ---
 

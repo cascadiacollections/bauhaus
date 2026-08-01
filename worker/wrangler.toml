@@ -3,8 +3,10 @@ main = "src/index.ts"
 compatibility_date = "2026-06-12"
 compatibility_flags = ["nodejs_compat"]
 
-[limits]
-cpu_ms = 1
+# No [limits] block: cpu_ms caps CPU time per invocation, and this was set to
+# 1 — one millisecond — which arrived by way of a 1.25 truncated to satisfy the
+# integer schema rather than by any deliberate budget. Falling back to the
+# platform default is correct for a handler whose work is R2 reads.
 
 [observability.logs]
 enabled = true
