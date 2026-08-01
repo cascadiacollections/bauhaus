@@ -72,6 +72,21 @@ def serialize_metadata(metadata: dict) -> bytes:
     return json.dumps(metadata, indent=2, sort_keys=True).encode()
 
 
+def _is_published(client, bucket: str, date_path: str) -> bool:
+    """Whether the metadata key for a date already exists in R2."""
+    try:
+        client.head_object(Bucket=bucket, Key=f"metadata/{date_path}.json")
+    except ClientError as exc:
+        # 404/NoSuchKey is the expected path: nothing published for this date.
+        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        code = exc.response.get("Error", {}).get("Code")
+        if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+
+    return True
+
+
 def _assert_unpublished(client, bucket: str, date_path: str, today: date) -> None:
     """Refuse to overwrite a date that has already been published.
 
@@ -86,23 +101,28 @@ def _assert_unpublished(client, bucket: str, date_path: str, today: date) -> Non
     (`--overwrite`, or the workflow_dispatch input) to republish a date
     deliberately, accepting that already-cached copies stay stale.
     """
-    key = f"metadata/{date_path}.json"
-    try:
-        client.head_object(Bucket=bucket, Key=key)
-    except ClientError as exc:
-        # 404/NoSuchKey is the expected path: nothing published for this date.
-        status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        code = exc.response.get("Error", {}).get("Code")
-        if status == 404 or code in {"404", "NoSuchKey", "NotFound"}:
-            return
-        raise
+    if _is_published(client, bucket, date_path):
+        raise AlreadyPublishedError(
+            f"{today.isoformat()} is already published "
+            f"(found metadata/{date_path}.json). Date keys are served immutable, "
+            "so rewriting them leaves stale and possibly mismatched copies in "
+            "caches forever. Re-run with --overwrite if that is what you want."
+        )
 
-    raise AlreadyPublishedError(
-        f"{today.isoformat()} is already published (found {key}). "
-        "Date keys are served immutable, so rewriting them leaves stale and "
-        "possibly mismatched copies in caches forever. Re-run with --overwrite "
-        "if that is what you want."
-    )
+
+def assert_unpublished(today: date | None = None, bucket: str | None = None) -> None:
+    """Preflight the write-once check before any expensive work happens.
+
+    upload() runs this same check immediately before its first PUT, and that
+    call is the authoritative one — it is what narrows the window in which a
+    concurrent generator can slip in. This wrapper does not replace it. It
+    exists so that the *common* rejection lands early: without it a collision
+    costs a full fetch → style transfer → variants pipeline, half a minute of
+    work, before anything so much as looks at R2.
+    """
+    bucket = bucket or os.environ.get("R2_BUCKET", "bauhaus")
+    today = today or utc_today()
+    _assert_unpublished(_get_client(), bucket, today.strftime("%Y/%m/%d"), today)
 
 
 def upload(

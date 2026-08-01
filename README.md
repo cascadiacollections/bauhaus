@@ -99,7 +99,7 @@ All `GET` endpoints also support `HEAD` — returns the same response headers (i
 | Endpoint pattern | `Cache-Control` |
 |-----------------|----------------|
 | `/api/today*` | `public, max-age=300, s-maxage=3600, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; the edge TTL stays below the 24h publish interval so a PoP cannot serve yesterday's artwork past the next run |
-| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed |
+| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed. The check runs twice, once before the fetch so a collision costs nothing and once immediately before the first upload, which is the one that closes the race |
 
 ### Responsive image consumer snippet
 
@@ -235,6 +235,7 @@ just generate --alpha 0.5         # subtle style (0.0-1.0)
 just generate --any-subject       # disable landscape filter
 just generate --max-size 1536     # higher processing resolution
 just generate --overwrite         # republish a date already in R2
+just generate --skip-if-published # exit 0 instead of failing if the date exists
 
 # List all available recipes
 just

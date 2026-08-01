@@ -1,6 +1,7 @@
 """Tests for upload.py — key generation, metadata enrichment, and S3 calls."""
 
 import json
+import os
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from upload import (
     IMMUTABLE_CACHE,
     LATEST_CACHE,
     AlreadyPublishedError,
+    assert_unpublished,
     prepare_metadata_for_upload,
     serialize_metadata,
     upload,
@@ -401,6 +403,55 @@ class TestWriteOnceGuard:
         with pytest.raises(ClientError):
             self._upload(client)
         assert client.put_object.call_count == 0
+
+
+class TestAssertUnpublishedPreflight:
+    """The public wrapper main.py calls before spending 30s on an image.
+
+    It answers the same question as the guard inside upload(), against the same
+    key, so a preflight that passes and an upload that then refuses can only
+    mean a concurrent generator — never a disagreement between the two checks.
+    """
+
+    def _preflight(self, client, **kwargs):
+        with patch("upload._get_client", return_value=client):
+            return assert_unpublished(today=date(2026, 1, 2), bucket="test-bucket", **kwargs)
+
+    def test_unpublished_date_passes(self):
+        assert self._preflight(make_r2_client(published=False)) is None
+
+    def test_published_date_raises(self):
+        with pytest.raises(AlreadyPublishedError, match="2026-01-02"):
+            self._preflight(make_r2_client(published=True))
+
+    def test_checks_the_same_key_the_upload_guard_checks(self):
+        client = make_r2_client(published=False)
+        self._preflight(client)
+        assert client.head_object.call_args.kwargs["Key"] == "metadata/2026/01/02.json"
+        assert client.head_object.call_args.kwargs["Bucket"] == "test-bucket"
+
+    def test_never_writes(self):
+        client = make_r2_client(published=False)
+        self._preflight(client)
+        assert client.put_object.call_count == 0
+
+    def test_non_404_client_error_propagates(self):
+        """A 403 answers nothing; it must not read as "free to publish"."""
+        client = make_r2_client(published=False)
+        client.head_object.side_effect = ClientError(
+            {"Error": {"Code": "403", "Message": "Forbidden"},
+             "ResponseMetadata": {"HTTPStatusCode": 403}},
+            "HeadObject",
+        )
+        with pytest.raises(ClientError):
+            self._preflight(client)
+
+    def test_bucket_defaults_to_the_environment(self):
+        client = make_r2_client(published=False)
+        with patch("upload._get_client", return_value=client), \
+             patch.dict(os.environ, {"R2_BUCKET": "env-bucket"}):
+            assert_unpublished(today=date(2026, 1, 2))
+        assert client.head_object.call_args.kwargs["Bucket"] == "env-bucket"
 
 
 class TestCacheControlHeaders:
