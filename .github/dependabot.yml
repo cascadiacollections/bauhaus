@@ -4,7 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  - package-ecosystem: "pip"
+  # "uv", not "pip": the pip ecosystem edits pyproject.toml but leaves
+  # uv.lock untouched, which silently desynchronises the lockfile from the
+  # declared constraints. The uv ecosystem updates both together.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"

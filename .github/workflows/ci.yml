@@ -63,8 +63,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # --locked, not --frozen: --frozen only skips re-locking, it does not
+      # verify that uv.lock still satisfies pyproject.toml. --locked fails the
+      # build when the two have drifted apart.
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Check imports
         run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
