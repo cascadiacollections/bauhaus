@@ -20,6 +20,12 @@ MIN_SHARPNESS = 100.0
 MIN_ASPECT_RATIO = 0.5   # 1:2 portrait
 MAX_ASPECT_RATIO = 3.0   # 3:1 panoramic
 
+# Minimum ratio when a landscape-oriented image is required. The museum APIs
+# have no equivalent of Unsplash's `orientation=landscape` parameter, so the
+# shape constraint has to be enforced here or portrait-format paintings end up
+# being published as wallpapers.
+MIN_LANDSCAPE_ASPECT_RATIO = 1.0  # square or wider
+
 
 def sharpness_score(image: Image.Image) -> float:
     """Estimate image sharpness via Laplacian-like edge energy.
@@ -110,15 +116,20 @@ def aesthetic_score(image: Image.Image) -> dict:
     }
 
 
-def score_image(image: Image.Image) -> dict:
+def score_image(image: Image.Image, min_aspect_ratio: float = MIN_ASPECT_RATIO) -> dict:
     """Compute all quality metrics for an image.
+
+    Args:
+        image: Image to score.
+        min_aspect_ratio: Lower bound on width / height. Pass
+            ``MIN_LANDSCAPE_ASPECT_RATIO`` to reject portrait-format images.
 
     Returns a dict with individual scores and an overall ``pass`` bool.
     """
     w, h = image.size
     sharpness = sharpness_score(image)
     res_ok = check_resolution(image)
-    ar_ok = check_aspect_ratio(image)
+    ar_ok = check_aspect_ratio(image, min_ratio=min_aspect_ratio)
     sharp_ok = sharpness >= MIN_SHARPNESS
 
     return {

@@ -5,13 +5,13 @@ import random
 import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from io import BytesIO
 
 import requests
 from PIL import Image
 
-from quality import score_image
+from quality import MIN_ASPECT_RATIO, MIN_LANDSCAPE_ASPECT_RATIO, score_image
 
 NSFW_PATTERN = re.compile(
     r"\b(nude|naked|bather|bathers|bathing|odalisque|venus|cupid|"
@@ -96,14 +96,25 @@ _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})
 
 
-def _get(url: str, timeout: int = 30, headers: dict | None = None, params: dict | None = None) -> requests.Response:
+def _get(
+    url: str,
+    timeout: int = 30,
+    headers: dict | None = None,
+    params: dict | None = None,
+) -> requests.Response:
     resp = _session.get(url, timeout=timeout, headers=headers, params=params)
     resp.raise_for_status()
     return resp
 
 
-def _check_quality(image_bytes: bytes) -> tuple[bool, str]:
+def _check_quality(image_bytes: bytes, landscape_orientation: bool = False) -> tuple[bool, str]:
     """Run quality scoring on raw image bytes.
+
+    Args:
+        image_bytes: Raw encoded image.
+        landscape_orientation: When True, reject portrait-format images. The
+            museum APIs offer no orientation filter of their own, so this is
+            where that constraint is applied.
 
     Returns (passed, reason).  If passed is True, reason is empty.
     """
@@ -111,7 +122,8 @@ def _check_quality(image_bytes: bytes) -> tuple[bool, str]:
         img = Image.open(BytesIO(image_bytes)).convert("RGB")
     except Exception:
         return False, "could not decode image"
-    result = score_image(img)
+    min_ratio = MIN_LANDSCAPE_ASPECT_RATIO if landscape_orientation else MIN_ASPECT_RATIO
+    result = score_image(img, min_aspect_ratio=min_ratio)
     if not result["pass"]:
         reasons = []
         if not result["resolution_ok"]:
@@ -166,7 +178,9 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
             img_resp = _get(img_url, timeout=60)
 
             if quality_gate:
-                passed, reason = _check_quality(img_resp.content)
+                passed, reason = _check_quality(
+                    img_resp.content, landscape_orientation=landscapes_only,
+                )
                 if not passed:
                     print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
                     continue
@@ -226,7 +240,9 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
             img_resp = _get(iiif_url, timeout=60)
 
             if quality_gate:
-                passed, reason = _check_quality(img_resp.content)
+                passed, reason = _check_quality(
+                    img_resp.content, landscape_orientation=landscapes_only,
+                )
                 if not passed:
                     print(f"Quality gate rejected: {reason} ({title})", file=sys.stderr)
                     continue
@@ -273,7 +289,9 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
             img_resp = _get(raw_url, timeout=60)
 
             if quality_gate:
-                passed, reason = _check_quality(img_resp.content)
+                passed, reason = _check_quality(
+                    img_resp.content, landscape_orientation=landscapes_only,
+                )
                 if not passed:
                     print(f"Quality gate rejected: {reason}", file=sys.stderr)
                     continue
@@ -305,7 +323,11 @@ _FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
 }
 
 
-def fetch_artwork(source: str = "unsplash", landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
+def fetch_artwork(
+    source: str = "unsplash",
+    landscapes_only: bool = True,
+    quality_gate: bool = True,
+) -> Artwork:
     """Fetch artwork from the specified source.
 
     Args:

@@ -4,69 +4,79 @@
     "title": "Water Lilies",
     "artist": "Claude Monet",
     "year": "1906",
-    "source_url": "https://www.artic.edu/artworks/16568/water-lilies"
+    "source_url": "https://www.artic.edu/artworks/16568/water-lilies",
+    "download_url": "https://www.artic.edu/iiif/2/3c27b499-af56-f0d5-93b5-a7f2f1ad5813/full/843,/0/default.jpg"
   },
   {
     "filename": "hokusai-great-wave.jpg",
     "title": "Under the Wave off Kanagawa (The Great Wave)",
     "artist": "Katsushika Hokusai",
     "year": "1831",
-    "source_url": "https://www.metmuseum.org/art/collection/search/45434"
+    "source_url": "https://www.metmuseum.org/art/collection/search/45434",
+    "download_url": "https://images.metmuseum.org/CRDImages/as/original/DP141063.jpg"
   },
   {
     "filename": "cezanne-mont-sainte-victoire.jpg",
     "title": "Mont Sainte-Victoire and the Viaduct of the Arc River Valley",
-    "artist": "Paul C\u00e9zanne",
-    "year": "1882\u20131885",
-    "source_url": "https://www.metmuseum.org/art/collection/search/435877"
+    "artist": "Paul Cézanne",
+    "year": "1882–1885",
+    "source_url": "https://www.metmuseum.org/art/collection/search/435877",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT1942.jpg"
   },
   {
     "filename": "turner-grand-canal.jpg",
     "title": "Venice, from the Porch of Madonna della Salute",
     "artist": "J. M. W. Turner",
     "year": "1835",
-    "source_url": "https://www.metmuseum.org/art/collection/search/437853"
+    "source_url": "https://www.metmuseum.org/art/collection/search/437853",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT200.jpg"
   },
   {
     "filename": "hiroshige-sudden-shower.jpg",
-    "title": "Sudden Shower over Shin-\u014chashi Bridge and Atake",
+    "title": "Sudden Shower over Shin-Ōhashi Bridge and Atake",
     "artist": "Utagawa Hiroshige",
     "year": "1857",
-    "source_url": "https://www.metmuseum.org/art/collection/search/36975"
+    "source_url": "https://www.metmuseum.org/art/collection/search/36975",
+    "download_url": "https://images.metmuseum.org/CRDImages/as/original/DP141105.jpg"
   },
   {
     "filename": "seurat-circus-sideshow.jpg",
     "title": "Circus Sideshow (Parade de cirque)",
     "artist": "Georges Seurat",
     "year": "1888",
-    "source_url": "https://www.metmuseum.org/art/collection/search/437654"
+    "source_url": "https://www.metmuseum.org/art/collection/search/437654",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT1879.jpg"
   },
   {
     "filename": "degas-dance-class.jpg",
     "title": "The Dance Class",
     "artist": "Edgar Degas",
     "year": "1874",
-    "source_url": "https://www.metmuseum.org/art/collection/search/438817"
+    "source_url": "https://www.metmuseum.org/art/collection/search/438817",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT46.jpg"
   },
   {
     "filename": "klimt-mada-primavesi.jpg",
-    "title": "M\u00e4da Primavesi (1903\u20132000)",
+    "title": "Mäda Primavesi (1903–2000)",
     "artist": "Gustav Klimt",
     "year": "1912",
-    "source_url": "https://www.metmuseum.org/art/collection/search/436819"
+    "source_url": "https://www.metmuseum.org/art/collection/search/436819",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT2070.jpg"
   },
   {
     "filename": "vangogh-wheat-field.jpg",
     "title": "Wheat Field with Cypresses",
     "artist": "Vincent van Gogh",
     "year": "1889",
-    "source_url": "https://www.metmuseum.org/art/collection/search/436535"
+    "source_url": "https://www.metmuseum.org/art/collection/search/436535",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT1567.jpg"
   },
   {
     "filename": "gauguin-ia-orana.jpg",
     "title": "Ia Orana Maria (Hail Mary)",
     "artist": "Paul Gauguin",
     "year": "1891",
-    "source_url": "https://www.metmuseum.org/art/collection/search/438821"
+    "source_url": "https://www.metmuseum.org/art/collection/search/438821",
+    "download_url": "https://images.metmuseum.org/CRDImages/ep/original/DT1025.jpg"
   }
 ]

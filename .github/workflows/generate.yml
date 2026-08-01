@@ -2,21 +2,40 @@ name: Generate Daily Art
 
 on:
   workflow_dispatch:
+    inputs:
+      source:
+        description: "Art source for this run"
+        required: false
+        type: choice
+        default: met
+        options: [met, artic, unsplash]
   schedule:
     - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
+
+permissions:
+  contents: read
+
+# One generation at a time: a manual dispatch must not race the scheduled run
+# for the same date's R2 keys.
+concurrency:
+  group: generate-daily-art
+  cancel-in-progress: false
 
 jobs:
   generate:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Job-level env: the `secrets` context is not available in step-level `if:`
+    # conditions, but `env` is — so gate values must be surfaced here.
+    env:
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
-
-      - uses: actions/setup-python@v6
-        with:
           python-version: '3.14'
 
       - uses: actions/cache@v6
@@ -33,20 +52,24 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Import GPG key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: env.GPG_PRIVATE_KEY != ''
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
+      # Scheduled runs use CC0 museum sources so every published image is
+      # uniformly CC0 and no API key is on the critical path. Unsplash stays
+      # available via the workflow_dispatch input (its licence is not CC0,
+      # so those runs produce source-dependent output).
       - name: Generate and upload
-        run: uv run python src/main.py --source unsplash
+        run: uv run python src/main.py --source "${SOURCE}"
         env:
+          SOURCE: ${{ inputs.source || 'met' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -71,8 +94,6 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Generate workflow completed successfully." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Notify failure
         if: failure() && env.NTFY_TOPIC != ''
@@ -85,5 +106,3 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Generate workflow failed. Check the run logs for details." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

@@ -1,9 +1,13 @@
 name: Generate Daily Art (Self-Hosted Mac Mini)
 
+# Dispatch only, deliberately. This workflow and generate.yml both used to run
+# at 04:00 UTC, writing the same R2 keys for the same date from two different
+# artworks. Because the uploads interleave key-by-key rather than atomically,
+# a losing race could leave the served image and its metadata describing
+# different artworks. generate.yml is the scheduled generator; run this one by
+# hand when you want the Mac Mini's MPS acceleration.
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day)
 
 permissions:
   contents: read
@@ -18,6 +22,10 @@ jobs:
       # Persistent directories on the Mac Mini avoid re-downloading each run.
       UV_CACHE_DIR: ~/Library/Caches/bauhaus-uv
       MODELS_CACHE: models/weights
+      # The `secrets` context is not available in step-level `if:` conditions,
+      # but `env` is — so gate values must be surfaced here.
+      GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
     steps:
       - uses: actions/checkout@v7
 
@@ -35,19 +43,19 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models (cached on disk)
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Import GPG key
-        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        if: env.GPG_PRIVATE_KEY != ''
         env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
+      # CC0 museum source — see the note in generate.yml.
       - name: Generate and upload
-        run: uv run python src/main.py --source unsplash
+        run: uv run python src/main.py --source met
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -70,8 +78,6 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Self-hosted generate completed successfully." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
       - name: Notify failure
         if: failure() && env.NTFY_TOPIC != ''
@@ -84,5 +90,3 @@ jobs:
             -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "Self-hosted generate failed. Check the run logs." \
             "https://ntfy.sh/$NTFY_TOPIC"
-        env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

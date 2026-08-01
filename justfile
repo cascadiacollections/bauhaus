@@ -10,11 +10,15 @@ setup:
 
 # Install all dependencies (Python + Worker)
 setup-all: setup
-    cd worker && bun install --frozen-lockfile
+    cd worker && npm ci
 
 # Download AdaIN model weights (~94 MB)
 download-models:
-    python models/download_models.py
+    uv run --script models/download_models.py
+
+# Download the curated CC0 style references listed in styles/styles.json
+download-styles *ARGS:
+    uv run --script styles/download_styles.py {{ ARGS }}
 
 # Run tests
 test:
@@ -47,12 +51,12 @@ docker-run *ARGS:
 
 # Start Worker dev server
 worker-dev:
-    cd worker && bunx wrangler dev
+    cd worker && npx wrangler dev
 
 # Typecheck Worker
 worker-check:
-    cd worker && bunx tsc --noEmit
+    cd worker && npx tsc --noEmit
 
 # Deploy Worker to Cloudflare
 worker-deploy:
-    cd worker && bunx wrangler deploy
+    cd worker && npx wrangler deploy

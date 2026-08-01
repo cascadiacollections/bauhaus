@@ -36,7 +36,9 @@ function fakeR2Head(key: string, etag: string): R2Object {
   } as unknown as R2Object;
 }
 
-function makeBucket(objects: Record<string, R2ObjectBody>): R2Bucket {
+// Values may be undefined: the it.each tables below omit keys per case, and
+// the implementation already normalises a miss to null.
+function makeBucket(objects: Record<string, R2ObjectBody | undefined>): R2Bucket {
   return {
     get: vi.fn(async (key: string) => objects[key] ?? null),
     head: vi.fn(async (key: string) => {
@@ -481,10 +483,10 @@ describe("ETag and conditional requests", () => {
     await worker.fetch(req, env);
     const imageKey = `stylized/${DATE_PATH}.jpg`;
     const getCalls: string[] = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     const headCalls: string[] = (bucket.head as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     // head() must have been called for the image key
     expect(headCalls).toContain(imageKey);
@@ -499,10 +501,10 @@ describe("ETag and conditional requests", () => {
     await worker.fetch(req, env);
     const imageKey = `stylized/${DATE_PATH}.jpg`;
     const getCalls: string[] = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     const headCalls: string[] = (bucket.head as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     expect(headCalls).toContain(imageKey);
     expect(getCalls).toContain(imageKey);
@@ -877,10 +879,10 @@ describe("HEAD method support", () => {
     await worker.fetch(makeRequest("/api/today", { method: "HEAD" }), env);
     const imageKey = `stylized/${DATE_PATH}.jpg`;
     const getCalls: string[] = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     const headCalls: string[] = (bucket.head as ReturnType<typeof vi.fn>).mock.calls.map(
-      (c: [string]) => c[0],
+      (c: unknown[]) => c[0] as string,
     );
     expect(headCalls).toContain(imageKey);
     expect(getCalls.filter((k) => k !== "latest.json")).not.toContain(imageKey);

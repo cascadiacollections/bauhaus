@@ -5,6 +5,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from quality import (
     MIN_ASPECT_RATIO,
     MIN_DIMENSION,
+    MIN_LANDSCAPE_ASPECT_RATIO,
     MIN_SHARPNESS,
     aesthetic_score,
     check_aspect_ratio,
@@ -14,7 +15,6 @@ from quality import (
     score_image,
     sharpness_score,
 )
-
 
 # --- helpers ---
 
@@ -173,3 +173,37 @@ class TestScoreImage:
         result = score_image(img)
         assert "sharpness" in result
         assert isinstance(result["sharpness"], float)
+
+
+class TestLandscapeOrientation:
+    """score_image(min_aspect_ratio=...) — the orientation constraint the
+    museum APIs don't provide, unlike Unsplash's orientation=landscape."""
+
+    def test_portrait_passes_by_default(self):
+        img = _sharp_image((600, 900))  # ratio 0.67, inside the default range
+        assert score_image(img)["aspect_ratio_ok"] is True
+
+    def test_portrait_rejected_when_landscape_required(self):
+        img = _sharp_image((600, 900))
+        result = score_image(img, min_aspect_ratio=MIN_LANDSCAPE_ASPECT_RATIO)
+        assert result["aspect_ratio_ok"] is False
+        assert result["pass"] is False
+
+    def test_landscape_passes_when_landscape_required(self):
+        img = _sharp_image((1200, 800))  # ratio 1.5
+        result = score_image(img, min_aspect_ratio=MIN_LANDSCAPE_ASPECT_RATIO)
+        assert result["aspect_ratio_ok"] is True
+        assert result["pass"] is True
+
+    def test_square_is_allowed(self):
+        img = _sharp_image((800, 800))  # ratio exactly 1.0, the boundary
+        result = score_image(img, min_aspect_ratio=MIN_LANDSCAPE_ASPECT_RATIO)
+        assert result["aspect_ratio_ok"] is True
+
+    def test_panoramic_still_capped(self):
+        img = _sharp_image((3200, 800))  # ratio 4.0, above MAX_ASPECT_RATIO
+        result = score_image(img, min_aspect_ratio=MIN_LANDSCAPE_ASPECT_RATIO)
+        assert result["aspect_ratio_ok"] is False
+
+    def test_landscape_floor_is_stricter_than_default(self):
+        assert MIN_LANDSCAPE_ASPECT_RATIO > MIN_ASPECT_RATIO

@@ -1,7 +1,6 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
-from fetch import Artwork, fetch_artwork, is_safe_title, is_preferred_subject, is_landscape
-
+from fetch import Artwork, fetch_artwork, is_landscape, is_preferred_subject, is_safe_title
 
 # --- is_safe_title ---
 
@@ -169,3 +168,53 @@ class TestFetchArtworkSources:
         import pytest
         with pytest.raises(ValueError, match="Unknown source"):
             fetch_artwork("invalid_source")
+
+
+# --- _check_quality orientation gate ---
+
+class TestCheckQualityOrientation:
+    """The museum APIs have no orientation filter, so _check_quality is where
+    portrait-format artwork is kept out of the landscape-only pipeline."""
+
+    @staticmethod
+    def _jpeg(width: int, height: int) -> bytes:
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+
+        img = Image.new("RGB", (width, height), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        for i in range(0, width, 10):
+            draw.line([(i, 0), (i, height)], fill=(0, 0, 0), width=2)
+        for j in range(0, height, 10):
+            draw.line([(0, j), (width, j)], fill=(0, 0, 0), width=2)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=95)
+        return buf.getvalue()
+
+    def test_portrait_allowed_when_orientation_not_required(self):
+        from fetch import _check_quality
+
+        passed, _ = _check_quality(self._jpeg(600, 900))
+        assert passed is True
+
+    def test_portrait_rejected_when_landscape_required(self):
+        from fetch import _check_quality
+
+        passed, reason = _check_quality(self._jpeg(600, 900), landscape_orientation=True)
+        assert passed is False
+        assert "aspect ratio" in reason
+
+    def test_landscape_accepted_when_landscape_required(self):
+        from fetch import _check_quality
+
+        passed, reason = _check_quality(self._jpeg(1200, 800), landscape_orientation=True)
+        assert passed is True
+        assert reason == ""
+
+    def test_undecodable_bytes_rejected(self):
+        from fetch import _check_quality
+
+        passed, reason = _check_quality(b"not an image", landscape_orientation=True)
+        assert passed is False
+        assert "decode" in reason

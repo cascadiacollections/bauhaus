@@ -65,7 +65,7 @@ function datePath(dateStr: string): string {
 
 async function getToday(bucket: R2Bucket): Promise<string> {
   const obj = await bucket.get("latest.json");
-  if (!obj) throw new Error("No latest.json found");
+  if (!obj) throw new NoLatestError("No latest.json found");
   const data: { date: string } = await obj.json();
   return data.date;
 }
@@ -456,8 +456,40 @@ async function serveJson(
   return jsonResponse(obj, today);
 }
 
+/** 503 for upstream failures — same JSON+CORS shape as notFound(). */
+function unavailable(msg: string): Response {
+  return new Response(JSON.stringify({ error: msg }), {
+    status: 503,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": "no-store",
+      ...corsHeaders(),
+    },
+  });
+}
+
+/** Raised when latest.json is missing, to separate "not published yet" from a genuine R2 fault. */
+class NoLatestError extends Error {}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // Without this, an R2 fault or a missing latest.json escapes as a bare 500
+    // carrying no CORS headers, so browsers see an opaque CORS failure rather
+    // than the JSON error every other path returns — precisely when the API is
+    // already unhealthy.
+    try {
+      return await handle(request, env);
+    } catch (err) {
+      if (err instanceof NoLatestError) {
+        return notFound("No artwork published yet");
+      }
+      console.error("Unhandled error", err);
+      return unavailable("Upstream storage unavailable");
+    }
+  },
+};
+
+async function handle(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const progressive = isProgressive(url);
@@ -523,5 +555,4 @@ export default {
     }
 
     return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");
-  },
-};
+}

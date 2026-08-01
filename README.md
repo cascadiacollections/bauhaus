@@ -10,9 +10,11 @@
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776ab.svg)](https://python.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 
-Daily stylized art from Unsplash landscapes and public domain museum collections.
+Daily stylized art from public domain museum collections.
 
-Fetches landscape photos from [Unsplash](https://unsplash.com) (default) or CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection), applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
+Fetches CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection) — or landscape photos from [Unsplash](https://unsplash.com) — applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
+
+Scheduled runs use the CC0 museum sources, so everything published to the API is CC0 and no API key sits on the critical path. Unsplash remains available for manual runs (`--source unsplash`, or the `source` input on the Generate workflow); its licence is permissive but not CC0.
 
 ## Set as your wallpaper
 
@@ -52,7 +54,7 @@ Automate it with a cron job, Task Scheduler, or systemd timer to get fresh art o
 
 ```
 GitHub Actions (daily, 4 AM UTC / 8 PM PT)
-  1. Fetch landscape photo from Unsplash (or CC0 landscape from Met/AIC)
+  1. Fetch CC0 landscape from Met/AIC (or a photo from Unsplash on demand)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
   4. Generate AVIF + WebP variants for smaller files and faster loads
@@ -205,9 +207,9 @@ wrangler analytics-engine sql 'SELECT * FROM web_errors LIMIT 10'
 
 ## Local development
 
-Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), [Bun](https://bun.sh), and [just](https://github.com/casey/just)).
+Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.com/astral-sh/uv), Python 3.14+, [Node.js 24+](https://nodejs.org), and [just](https://github.com/casey/just)).
 
-For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Bun, Node, Python 3.14, uv, and just.
+For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Node, Python 3.14, uv, and just.
 
 ```bash
 # Install dependencies
@@ -215,6 +217,9 @@ just setup
 
 # Download AdaIN model weights (~94 MB)
 just download-models
+
+# Re-fetch the curated CC0 style references (already checked in)
+just download-styles
 
 # Run tests
 just test
@@ -271,7 +276,7 @@ just worker-check     # typecheck
 | `R2_SECRET_ACCESS_KEY` | R2 secret key |
 | `R2_BUCKET` | Bucket name (default: `bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
-| `UNSPLASH_ACCESS_KEY` | Unsplash API access key |
+| `UNSPLASH_ACCESS_KEY` | Unsplash API access key. Only needed for `--source unsplash`; the CC0 museum sources require no credentials. |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 | `MEMORY_PROFILE` | `balanced` (default) or `low-memory`. `low-memory` caps `MAX_SIZE` at 1024 and disables variant generation by default to fit constrained CPU/RAM runners. |
 | `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`, or `false` in `low-memory`) |
@@ -282,6 +287,51 @@ just worker-check     # typecheck
 - Keep secrets in GitHub Actions secrets / local `.env` files only; never print them in logs.
 - The production workflow uses `R2_*` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
 - For local Podman runs, pass env vars via `--env-file .env` or a secret manager rather than embedding them in shell history.
+
+### Metadata signing (PGP)
+
+Each day's `metadata/<date>.json` can be published alongside a detached
+signature at `metadata/<date>.json.sig`, letting consumers verify the metadata
+came from this pipeline. **Signing is currently dormant** — the workflow skips
+the `Import GPG key` step whenever `GPG_PRIVATE_KEY` is unset, and
+`sign_metadata()` returns `None` rather than failing, so runs succeed silently
+without a signature.
+
+To turn it on, set three repository secrets:
+
+| Secret | What it is |
+|--------|-----------|
+| `GPG_PRIVATE_KEY` | ASCII-armoured private key. Gates the import step — signing stays off until this is set. |
+| `GPG_KEY_ID` | Key ID or fingerprint, passed to `gpg --local-user`. Optional if the imported key is the default. |
+| `GPG_PASSPHRASE` | Passphrase, if the key has one. |
+
+Generating and exporting a signing key:
+
+```bash
+# Create a signing-only key (no expiry prompt in batch mode)
+gpg --quick-generate-key "Bauhaus <you@example.com>" ed25519 sign never
+
+# Fingerprint → GPG_KEY_ID
+gpg --list-secret-keys --keyid-format=long
+
+# Private key → GPG_PRIVATE_KEY (paste the whole armoured block)
+gpg --armor --export-secret-keys <KEY_ID>
+
+# Public key — publish this so consumers can verify
+gpg --armor --export <KEY_ID>
+```
+
+Verifying a published day:
+
+```bash
+curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json
+curl -sO https://bauhaus.cascadiacollections.workers.dev/api/2026-08-01.json.sig
+gpg --verify 2026-08-01.json.sig 2026-08-01.json
+```
+
+Note that the signature covers the metadata JSON only, not the image bytes, and
+that `.json.sig` is not currently exposed as a Worker route — it exists in R2 at
+`metadata/<date>.json.sig` but the API has no handler for it yet.
 
 ## Style references
 
@@ -299,4 +349,4 @@ Monet, Hokusai, Cezanne, Turner, Hiroshige, Seurat, Degas, Klimt, Van Gogh, Gaug
 | Style references | CC0 (same museum sources) |
 | AdaIN model | MIT ([naoto0804/pytorch-AdaIN](https://github.com/naoto0804/pytorch-AdaIN)) |
 | VGG-19 encoder | BSD-like (torchvision) |
-| **Output images** | **Source-dependent** (CC0-1.0 for museum sources, Unsplash License for Unsplash) |
+| **Output images** | **CC0-1.0** for scheduled runs, which use the museum sources. Runs explicitly pointed at Unsplash carry the Unsplash License instead — each image's `metadata.json` records which. |

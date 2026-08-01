@@ -10,6 +10,10 @@ on:
       - '.mise.toml'
       - 'justfile'
       - 'styles/**'
+  # Also on main: without this the merge commit is never verified, and the
+  # badge has no run to report.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -20,28 +24,61 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
-    name: Python (${{ matrix.os }}, ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ['3.13', '3.14']
+  # An invalid workflow file does not fail any PR check — GitHub simply
+  # refuses to run it, and scheduled runs stop being created silently.
+  # This job turns that failure mode into a red check.
+  actionlint:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v7
+      - name: Install actionlint
+        run: |
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  actionlint.tar.gz" | sha256sum --check --strict
+          tar xzf actionlint.tar.gz actionlint
+
+      - name: Lint workflows
+        run: ./actionlint -color
+
+  # Primary job: runs inside the very image the Dockerfile builds from, so CI
+  # exercises the production interpreter and libc rather than approximating
+  # them with a runner image.
+  python:
+    name: Python (debian, 3.14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: python:3.14-slim
+    env:
+      # The container already pins the interpreter this project wants; uv
+      # should use it rather than downloading a managed CPython.
+      UV_PYTHON_PREFERENCE: only-system
+    steps:
+      # actions/checkout needs git, and the slim image ships without it.
+      - name: Install git
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates
+          rm -rf /var/lib/apt/lists/*
+
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
 
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
+      # --locked, not --frozen: --frozen only skips re-locking, it does not
+      # verify that uv.lock still satisfies pyproject.toml. --locked fails the
+      # build when the two have drifted apart.
       - name: Install dependencies
-        run: uv sync --frozen
+        run: uv sync --locked
 
       - name: Check imports
         run: uv run python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
@@ -49,6 +86,50 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -v
+
+  # Secondary job: the self-hosted generator is an ARM64 Mac, and
+  # stylize._select_device() has an MPS branch nothing else exercises.
+  python-macos:
+    name: Python (macOS ARM64, 3.14)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # uv provisions the interpreter itself — no separate setup-python step.
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -v
+
+  lint:
+    name: Lint + audit (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          enable-cache: true
+          python-version: '3.14'
+
+      - name: Ruff
+        run: uvx ruff check --output-format=github .
+
+      # pip-audit with no target audits its OWN environment and reports a
+      # confident all-clear. It has to be pointed at the project's resolved
+      # dependency set, which is what the export produces.
+      - name: Audit dependencies
+        run: |
+          uv export --format requirements-txt --no-hashes --no-emit-project -o requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt --progress-spinner off
 
   podman:
     name: Podman smoke

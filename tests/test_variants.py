@@ -1,6 +1,5 @@
 """Tests for variants.py — AVIF and WebP variant generation."""
 
-import pytest
 from PIL import Image
 
 from variants import generate_variants
@@ -44,7 +43,6 @@ class TestGenerateVariants:
 
     def test_empty_dict_on_error(self, monkeypatch):
         """If both formats fail, returns whatever succeeded."""
-        import variants as mod
 
         original_save = Image.Image.save
 

@@ -8,7 +8,13 @@ from upload import prepare_metadata_for_upload, serialize_metadata, upload
 
 
 class TestUpload:
-    def _run_upload(self, today: date | None = None, manifest: dict | None = None, variants: dict[str, bytes] | None = None, stripped_bytes: bytes | None = None):
+    def _run_upload(
+        self,
+        today: date | None = None,
+        manifest: dict | None = None,
+        variants: dict[str, bytes] | None = None,
+        stripped_bytes: bytes | None = None,
+    ):
         today = today or date(2025, 7, 14)
         mock_client = MagicMock()
 
@@ -77,7 +83,11 @@ class TestUpload:
         _, mock_client = self._run_upload(variants=variants)
         calls = mock_client.put_object.call_args_list
         # Variants are uploaded after stylized JPEG (index 1) and before metadata (index 4+)
-        variant_calls = {c.kwargs["Key"]: c.kwargs["ContentType"] for c in calls if ".avif" in c.kwargs.get("Key", "") or ".webp" in c.kwargs.get("Key", "")}
+        variant_calls = {
+            c.kwargs["Key"]: c.kwargs["ContentType"]
+            for c in calls
+            if ".avif" in c.kwargs.get("Key", "") or ".webp" in c.kwargs.get("Key", "")
+        }
         assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
         assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
 
@@ -151,8 +161,12 @@ class TestUploadVariants:
         variants = {"avif": b"a", "webp": b"w", "progressive.jpg": b"p", "stripped.jpg": b"s"}
         _, mock_client = self._run_upload(variants=variants)
         calls = mock_client.put_object.call_args_list
-        variant_calls = {c.kwargs["Key"]: c.kwargs["ContentType"] for c in calls
-                         if "stylized/" in c.kwargs.get("Key", "") and c.kwargs["Key"] != "stylized/2025/07/14.jpg"}
+        variant_calls = {
+            c.kwargs["Key"]: c.kwargs["ContentType"]
+            for c in calls
+            if "stylized/" in c.kwargs.get("Key", "")
+            and c.kwargs["Key"] != "stylized/2025/07/14.jpg"
+        }
         assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
         assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
         assert variant_calls["stylized/2025/07/14.progressive.jpg"] == "image/jpeg"
@@ -259,3 +273,51 @@ class TestUploadMetadataSig:
             and c.kwargs.get("Key", "").startswith("metadata/")
         )
         assert metadata_call.kwargs["Body"] == expected_bytes
+
+
+class TestStrippedVariantNotDuplicated:
+    """generate_variants() always emits "stripped.jpg", and main.py builds
+    stripped_bytes separately when --strip is on. Both default to on, so the
+    default path used to PUT the same key twice."""
+
+    def _upload(self, **kwargs):
+        mock_client = MagicMock()
+        with patch("upload._get_client", return_value=mock_client):
+            keys = upload(
+                b"original", b"stylized", {"title": "t"},
+                bucket="test", today=date(2026, 1, 2), **kwargs,
+            )
+        put_keys = [c.kwargs["Key"] for c in mock_client.put_object.call_args_list]
+        bodies = {c.kwargs["Key"]: c.kwargs["Body"] for c in mock_client.put_object.call_args_list}
+        return keys, put_keys, bodies
+
+    _VARIANTS = {
+        "avif": b"avif-data",
+        "webp": b"webp-data",
+        "progressive.jpg": b"progressive-data",
+        "stripped.jpg": b"variant-stripped",
+    }
+
+    def test_no_key_written_twice(self):
+        _, put_keys, _ = self._upload(
+            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
+        )
+        assert len(put_keys) == len(set(put_keys))
+
+    def test_explicit_stripped_bytes_win(self):
+        _, _, bodies = self._upload(
+            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
+        )
+        assert bodies["stylized/2026/01/02.stripped.jpg"] == b"explicit-stripped"
+
+    def test_variant_stripped_used_when_no_explicit_bytes(self):
+        _, put_keys, bodies = self._upload(variants=self._VARIANTS)
+        assert "stylized/2026/01/02.stripped.jpg" in put_keys
+        assert bodies["stylized/2026/01/02.stripped.jpg"] == b"variant-stripped"
+
+    def test_other_variants_unaffected(self):
+        _, put_keys, _ = self._upload(
+            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
+        )
+        for suffix in ("avif", "webp", "progressive.jpg"):
+            assert f"stylized/2026/01/02.{suffix}" in put_keys

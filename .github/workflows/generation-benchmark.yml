@@ -40,12 +40,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           enable-cache: true
-
-      - uses: actions/setup-python@v6
-        with:
           python-version: "3.14"
 
       - uses: actions/cache@v6
@@ -57,7 +54,7 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Run benchmark (dry run)
         run: |
@@ -105,7 +102,7 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Run benchmark (dry run)
         run: |
