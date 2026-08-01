@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Download VGG-19 encoder and AdaIN decoder weights (cross-platform)."""
+# /// script
+# requires-python = ">=3.13"
+# dependencies = []
+# ///
+"""Download VGG-19 encoder and AdaIN decoder weights (cross-platform).
+
+Standalone — no project dependencies:
+
+    uv run --script models/download_models.py
+"""
 
 from pathlib import Path
 from urllib.error import URLError

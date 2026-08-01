@@ -55,12 +55,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # uv provisions the interpreter itself — no separate setup-python step.
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-
-      - uses: actions/setup-python@v6
-        with:
           python-version: ${{ matrix.python-version }}
 
       # --locked, not --frozen: --frozen only skips re-locking, it does not

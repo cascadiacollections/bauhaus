@@ -16,5 +16,11 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest>=9.1.1"]
 
+[tool.uv]
+# torch depends on setuptools with no upper or lower bound, which let the
+# resolver settle on 81.0.0 (PYSEC-2026-3447). Constrain it forward without
+# making setuptools a direct dependency.
+constraint-dependencies = ["setuptools>=83.0.0"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

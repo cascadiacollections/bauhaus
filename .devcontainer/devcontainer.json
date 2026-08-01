@@ -12,7 +12,7 @@
     },
     "ghcr.io/devcontainers/features/common-utils:2": {}
   },
-  "postCreateCommand": "cd ${containerWorkspaceFolder} && uv sync && cd worker && bun install --frozen-lockfile",
+  "postCreateCommand": "cd ${containerWorkspaceFolder} && uv sync && cd worker && npm ci",
   "customizations": {
     "vscode": {
       "settings": {
