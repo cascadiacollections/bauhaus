@@ -14,7 +14,11 @@ setup-all: setup
 
 # Download AdaIN model weights (~94 MB)
 download-models:
-    python models/download_models.py
+    uv run --script models/download_models.py
+
+# Download the curated CC0 style references listed in styles/styles.json
+download-styles *ARGS:
+    uv run --script styles/download_styles.py {{ ARGS }}
 
 # Run tests
 test:

@@ -2,6 +2,13 @@ name: Generate Daily Art
 
 on:
   workflow_dispatch:
+    inputs:
+      source:
+        description: "Art source for this run"
+        required: false
+        type: choice
+        default: met
+        options: [met, artic, unsplash]
   schedule:
     - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
 
@@ -19,9 +26,6 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-
-      - uses: actions/setup-python@v6
-        with:
           python-version: '3.14'
 
       - uses: actions/cache@v6
@@ -38,7 +42,7 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Import GPG key
         if: env.GPG_PRIVATE_KEY != ''
@@ -48,9 +52,14 @@ jobs:
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
+      # Scheduled runs use CC0 museum sources so every published image is
+      # uniformly CC0 and no API key is on the critical path. Unsplash stays
+      # available via the workflow_dispatch input (its licence is not CC0,
+      # so those runs produce source-dependent output).
       - name: Generate and upload
-        run: uv run python src/main.py --source unsplash
+        run: uv run python src/main.py --source "${SOURCE}"
         env:
+          SOURCE: ${{ inputs.source || 'met' }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}

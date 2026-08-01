@@ -39,7 +39,7 @@ jobs:
         run: uv sync --frozen --no-dev
 
       - name: Download models (cached on disk)
-        run: python models/download_models.py
+        run: uv run --script models/download_models.py
 
       - name: Import GPG key
         if: env.GPG_PRIVATE_KEY != ''
@@ -49,8 +49,9 @@ jobs:
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
+      # CC0 museum source — see the note in generate.yml.
       - name: Generate and upload
-        run: uv run python src/main.py --source unsplash
+        run: uv run python src/main.py --source met
         env:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
