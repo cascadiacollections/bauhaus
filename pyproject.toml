@@ -15,7 +15,7 @@ dependencies = [
     "requests>=2.34.2,<3.0",
     # Imported directly by src/quality.py — previously only resolved as a
     # transitive dependency of torch/torchvision.
-    "numpy>=2.4.0,<3.0",
+    "numpy>=2.5.2,<3.0",
 ]
 
 [dependency-groups]
