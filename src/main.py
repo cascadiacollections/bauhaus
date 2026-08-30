@@ -366,6 +366,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable landscape filter, allow any subject")
     parser.add_argument("--skip-quality-check", action="store_true",
                         help="Skip image quality scoring (sharpness, resolution, aspect ratio)")
+    parser.add_argument("--score", action=argparse.BooleanOptionalAction, default=True,
+                        help="Score the stylized output with NIMA alongside the "
+                             "heuristic metrics (default: on)")
     parser.add_argument("--color-harmonize", action=argparse.BooleanOptionalAction,
                         default=True,
                         help="Apply color harmonization (default: on)")
@@ -550,7 +553,14 @@ def main():
     # Build metadata
     metadata = artwork.to_metadata()
     metadata.update(style_meta)
-    metadata["aesthetic"] = aesthetic_score(stylized)
+    t = time.perf_counter()
+    metadata["aesthetic"] = aesthetic_score(stylized, nima=args.score)
+    record_timing("aesthetic_score", t)
+    aesthetic = metadata["aesthetic"]
+    summary = f"  Aesthetic: heuristic {aesthetic['score']}"
+    if "nima_mean" in aesthetic:
+        summary += f", NIMA {aesthetic['nima_mean']} ± {aesthetic['nima_std']}"
+    print(summary)
     metadata["alpha"] = args.alpha
     metadata["alpha_mode"] = args.alpha_mode
     if args.alpha_mode != "uniform":

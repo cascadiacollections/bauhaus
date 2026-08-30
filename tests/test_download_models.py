@@ -27,20 +27,30 @@ def _load_module():
 dm = _load_module()
 
 
+# Each downloaded file and the source module that consumes it. The NIMA
+# archive is converted before use, so nima.py names the .npz rather than the
+# .h5 it was built from.
+_CONSUMERS = {
+    "vgg_normalised.pth": ("stylize.py", "vgg_normalised.pth"),
+    "decoder.pth": ("stylize.py", "decoder.pth"),
+    "mobilenet_weights.h5": ("nima.py", dm.NIMA_CONVERTED),
+}
+
+
 class TestPinnedChecksums:
     def test_every_file_has_a_sha256(self):
-        assert set(dm._FILES) == {"vgg_normalised.pth", "decoder.pth"}
-        for name, digest in dm._FILES.items():
+        assert set(dm._FILES) == set(_CONSUMERS)
+        for name, (url, digest) in dm._FILES.items():
+            assert url.startswith("https://"), f"{name} is not fetched over TLS"
             assert len(digest) == 64, f"{name} checksum is not a SHA-256 hex digest"
             int(digest, 16)  # raises unless hex
 
-    def test_stylize_loads_exactly_these_files(self):
+    def test_each_weight_file_is_loaded_by_its_module(self):
         """A weight file renamed in one place and not the other fails silently."""
-        stylize_src = (
-            Path(__file__).resolve().parent.parent / "src" / "stylize.py"
-        ).read_text(encoding="utf-8")
-        for name in dm._FILES:
-            assert name in stylize_src, f"{name} is downloaded but never loaded"
+        src = Path(__file__).resolve().parent.parent / "src"
+        for name, (module, symbol) in _CONSUMERS.items():
+            source = (src / module).read_text(encoding="utf-8")
+            assert symbol in source, f"{name} is downloaded but {module} never loads it"
 
 
 class TestSha256File:
@@ -59,7 +69,13 @@ class TestSha256File:
 
 class TestDownloadModels:
     def _pin(self, monkeypatch, payload: bytes, name: str = "decoder.pth"):
-        monkeypatch.setattr(dm, "_FILES", {name: hashlib.sha256(payload).hexdigest()})
+        monkeypatch.setattr(
+            dm, "_FILES",
+            {name: (f"https://example.invalid/{name}", hashlib.sha256(payload).hexdigest())},
+        )
+        # The real conversion needs the NIMA .h5, which these fixtures do not
+        # write; the conversion itself is covered by TestConvertNima.
+        monkeypatch.setattr(dm, "convert_nima", lambda weights_dir: None)
 
     def test_valid_existing_file_is_not_redownloaded(self, tmp_path, monkeypatch):
         payload = b"good-weights"
@@ -118,3 +134,52 @@ class TestDownloadModels:
         with pytest.raises(RuntimeError, match="Failed to download"):
             dm.download_models(tmp_path)
         assert not (tmp_path / "decoder.pth").exists()
+
+
+class TestConvertNima:
+    """The .npz is a build product, so its freshness has to be self-checking."""
+
+    def _archive(self, path: Path, source_sha: str) -> None:
+        import numpy as np
+
+        np.savez(path, **{dm._SOURCE_SHA_KEY: np.array(source_sha), "dense.bias": np.zeros(10)})
+
+    def test_conversion_is_skipped_when_the_archive_is_current(self, tmp_path, monkeypatch):
+        source = tmp_path / dm.NIMA_SOURCE
+        source.write_bytes(b"keras-weights")
+        self._archive(tmp_path / dm.NIMA_CONVERTED, dm.sha256_file(source))
+
+        monkeypatch.setattr(dm, "_keras_to_torch", _unexpected_conversion)
+        dm.convert_nima(tmp_path)
+
+    def test_a_changed_source_triggers_reconversion(self, tmp_path, monkeypatch):
+        """Re-pinning the upstream weights must not leave stale arrays behind."""
+        import numpy as np
+
+        source = tmp_path / dm.NIMA_SOURCE
+        source.write_bytes(b"new-keras-weights")
+        self._archive(tmp_path / dm.NIMA_CONVERTED, "0" * 64)
+
+        monkeypatch.setattr(dm, "_keras_to_torch", lambda path: {"dense.bias": np.ones(10)})
+        dm.convert_nima(tmp_path)
+
+        with np.load(tmp_path / dm.NIMA_CONVERTED) as archive:
+            assert archive["dense.bias"].tolist() == [1.0] * 10
+            assert str(archive[dm._SOURCE_SHA_KEY]) == dm.sha256_file(source)
+
+    def test_an_unreadable_archive_is_rebuilt(self, tmp_path, monkeypatch):
+        import numpy as np
+
+        source = tmp_path / dm.NIMA_SOURCE
+        source.write_bytes(b"keras-weights")
+        (tmp_path / dm.NIMA_CONVERTED).write_bytes(b"not an npz")
+
+        monkeypatch.setattr(dm, "_keras_to_torch", lambda path: {"dense.bias": np.zeros(10)})
+        dm.convert_nima(tmp_path)
+
+        with np.load(tmp_path / dm.NIMA_CONVERTED) as archive:
+            assert str(archive[dm._SOURCE_SHA_KEY]) == dm.sha256_file(source)
+
+
+def _unexpected_conversion(path):
+    raise AssertionError("conversion ran despite an up-to-date archive")

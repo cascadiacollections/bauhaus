@@ -5,6 +5,8 @@ Used to reject low-quality source images before style transfer and to
 provide a cheap aesthetic signal for generated outputs.
 """
 
+import sys
+
 import numpy as np
 from PIL import Image, ImageFilter
 
@@ -96,8 +98,20 @@ def contrast_score(image: Image.Image) -> float:
     return float(gray.std())
 
 
-def aesthetic_score(image: Image.Image) -> dict:
-    """Create a lightweight 0–10 aesthetic signal from CPU-only heuristics."""
+def aesthetic_score(image: Image.Image, nima: bool = True) -> dict:
+    """Score an image's aesthetics: cheap heuristics, plus NIMA when available.
+
+    ``score`` is the heuristic 0–10 signal and keeps its meaning across every
+    record ever published — it is deliberately *not* replaced by the NIMA mean,
+    which lives alongside it as ``nima_mean`` / ``nima_std``. The two measure
+    different things: the heuristics detect degenerate output (flat, blurred,
+    washed out), while NIMA gives a learned aesthetic judgement trained on human
+    ratings. ``method`` records which of them ran.
+
+    NIMA is best-effort. Its weights are a separate download, and a scoring
+    failure is never worth failing a day's publish over, so any error degrades
+    to heuristics-only with a warning.
+    """
     sharpness = sharpness_score(image)
     colorfulness = colorfulness_score(image)
     contrast = contrast_score(image)
@@ -107,13 +121,28 @@ def aesthetic_score(image: Image.Image) -> dict:
     contrast_norm = min(1.0, contrast / 80.0)
     score = 10.0 * (0.45 * sharp_norm + 0.30 * color_norm + 0.25 * contrast_norm)
 
-    return {
+    result = {
         "score": round(float(score), 2),
         "sharpness": round(float(sharpness), 2),
         "colorfulness": round(float(colorfulness), 2),
         "contrast": round(float(contrast), 2),
         "method": "heuristic-v1",
     }
+
+    if nima:
+        # Imported lazily: torch costs ~1 s to import, and --no-score runs
+        # (and every consumer of the heuristics alone) should not pay it.
+        try:
+            from nima import score as nima_score
+
+            nima_result = nima_score(image)
+            result["nima_mean"] = nima_result["mean"]
+            result["nima_std"] = nima_result["std"]
+            result["method"] = "heuristic-v1+nima-mobilenet-v1"
+        except Exception as exc:  # noqa: BLE001 — scoring must never fail a run
+            print(f"  ⚠ NIMA scoring unavailable ({exc}) — heuristics only", file=sys.stderr)
+
+    return result
 
 
 def score_image(image: Image.Image, min_aspect_ratio: float = MIN_ASPECT_RATIO) -> dict:
