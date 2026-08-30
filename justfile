@@ -12,7 +12,7 @@ setup:
 setup-all: setup
     cd worker && npm ci
 
-# Download AdaIN model weights (~94 MB)
+# Download AdaIN + NIMA model weights (~107 MB) and convert NIMA to PyTorch layout
 download-models:
     uv run --script models/download_models.py
 

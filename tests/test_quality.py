@@ -1,5 +1,8 @@
 """Tests for quality.py — image quality scoring for source filtering."""
 
+import sys
+import types
+
 from PIL import Image, ImageDraw, ImageFilter
 
 from quality import (
@@ -135,6 +138,37 @@ class TestAestheticHeuristics:
         assert isinstance(result, dict)
         assert "score" in result
         assert "method" in result
+
+    def test_nima_disabled_leaves_only_heuristics(self):
+        result = aesthetic_score(_sharp_image(), nima=False)
+
+        assert result["method"] == "heuristic-v1"
+        assert "nima_mean" not in result
+
+    def test_nima_results_are_recorded_alongside_the_heuristics(self, monkeypatch):
+        monkeypatch.setitem(
+            sys.modules, "nima", types.SimpleNamespace(score=lambda img: {"mean": 5.5, "std": 1.25}),
+        )
+        result = aesthetic_score(_sharp_image())
+
+        assert result["method"] == "heuristic-v1+nima-mobilenet-v1"
+        assert result["nima_mean"] == 5.5
+        assert result["nima_std"] == 1.25
+        # The heuristic score keeps its own meaning rather than being replaced.
+        assert result["score"] != 5.5
+
+    def test_nima_failure_degrades_to_heuristics(self, monkeypatch, capsys):
+        """A missing or broken model must never cost the day its publish."""
+        def explode(_image):
+            raise RuntimeError("weights are toast")
+
+        monkeypatch.setitem(sys.modules, "nima", types.SimpleNamespace(score=explode))
+        result = aesthetic_score(_sharp_image())
+
+        assert result["method"] == "heuristic-v1"
+        assert "nima_mean" not in result
+        assert result["score"] > 0
+        assert "weights are toast" in capsys.readouterr().err
 
     def test_colorfulness_and_contrast_are_finite(self):
         img = _sharp_image((640, 480))

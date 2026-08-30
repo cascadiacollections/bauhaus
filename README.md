@@ -57,8 +57,9 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT)
   1. Fetch CC0 landscape from Met/AIC (or a photo from Unsplash on demand)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
-  4. Generate AVIF + WebP variants for smaller files and faster loads
-  5. Upload original + stylized (JPEG/AVIF/WebP) + metadata to Cloudflare R2
+  4. Score the result (heuristics + NIMA) and record it in the metadata
+  5. Generate AVIF + WebP variants for smaller files and faster loads
+  6. Upload original + stylized (JPEG/AVIF/WebP) + metadata to Cloudflare R2
          |
   CF Worker API <-- R2 bucket
     GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
@@ -209,7 +210,7 @@ For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen
 # Install dependencies
 just setup
 
-# Download AdaIN model weights (~94 MB)
+# Download AdaIN + NIMA model weights (~107 MB)
 just download-models
 
 # Re-fetch the curated CC0 style references (already checked in)
@@ -234,6 +235,7 @@ just generate --source unsplash   # Unsplash — needs UNSPLASH_ACCESS_KEY
 just generate --alpha 0.5         # subtle style (0.0-1.0)
 just generate --any-subject       # disable landscape filter
 just generate --max-size 1536     # higher processing resolution
+just generate --no-score          # skip NIMA scoring (heuristics still run)
 just generate --overwrite         # republish a date already in R2
 just generate --skip-if-published # exit 0 instead of failing if the date exists
 
@@ -333,6 +335,52 @@ gpg --armor --export <KEY_ID>
 
 The signature covers the metadata JSON only, not the image bytes.
 
+## Aesthetic scoring
+
+Every published image is scored and the result is recorded under `aesthetic` in
+that date's metadata JSON. Two independent signals are stored side by side:
+
+```json
+"aesthetic": {
+  "score": 7.57,
+  "sharpness": 3312.24,
+  "colorfulness": 42.2,
+  "contrast": 47.67,
+  "method": "heuristic-v1+nima-mobilenet-v1",
+  "nima_mean": 5.267,
+  "nima_std": 1.601
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `score` | 0–10 heuristic signal combining sharpness, colorfulness, and contrast. Cheap, and good at catching degenerate output (flat, blurred, washed out) |
+| `sharpness`, `colorfulness`, `contrast` | The raw heuristic components, in their own units |
+| `nima_mean` | [NIMA](https://arxiv.org/abs/1709.05424) aesthetic score on the 1–10 AVA scale, from a MobileNet-v1 model trained on human ratings |
+| `nima_std` | Spread of NIMA's predicted rating distribution — a confidence signal, not a quality one |
+| `method` | Which scorers ran: `heuristic-v1`, or `heuristic-v1+nima-mobilenet-v1` when NIMA was included |
+
+The two are deliberately not merged. `score` keeps the same meaning in every
+record ever published, and NIMA is a learned judgement rather than a
+measurement — treat `nima_mean` as arbitrary units useful for *ranking*
+bauhaus's own outputs against each other, not as an absolute verdict. NIMA was
+trained on photographs, so stylized artwork sits outside its training
+distribution; it still reliably ranks blur, mud, and lost detail below a clean
+result.
+
+Scoring adds roughly 0.5 s to a run (weights load, then ~60 ms of inference)
+and never fails it: if the model is missing or errors, the run logs a warning
+and publishes with the heuristics alone. Pass `--no-score` to skip NIMA
+entirely.
+
+The weights are the MIT-licensed MobileNet-v1 NIMA model from
+[titu1994/neural-image-assessment](https://github.com/titu1994/neural-image-assessment)
+(0.0804 EMD on the AVA validation split), published in Keras format.
+`models/download_models.py` fetches them under a pinned SHA-256 and converts
+them once into `models/weights/nima_mobilenet.npz`, so generation needs only
+torch and numpy. The PyTorch port matches the original Keras graph to within
+float32 rounding (2.4e-07 max absolute difference on the output distribution).
+
 ## Style references
 
 10 curated CC0 paintings shipped in `styles/`, spanning Impressionism, Post-Impressionism, Japonisme, and Pointillism:
@@ -348,5 +396,6 @@ Monet, Hokusai, Cezanne, Turner, Hiroshige, Seurat, Degas, Klimt, Van Gogh, Gaug
 | Input art (Met/AIC) | CC0 (public domain collections) |
 | Style references | CC0 (same museum sources) |
 | AdaIN model | MIT ([naoto0804/pytorch-AdaIN](https://github.com/naoto0804/pytorch-AdaIN)) |
+| NIMA scoring model | MIT ([titu1994/neural-image-assessment](https://github.com/titu1994/neural-image-assessment)) |
 | VGG-19 encoder | BSD-like (torchvision) |
 | **Output images** | **CC0-1.0** for scheduled runs, which use the museum sources. Runs explicitly pointed at Unsplash carry the Unsplash License instead — each image's `metadata.json` records which. |

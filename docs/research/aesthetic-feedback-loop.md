@@ -2,7 +2,37 @@
 
 > **Issue:** [#10 — Research: Aesthetic feedback loop for output curation](https://github.com/cascadiacollections/bauhaus/issues/10)
 > **Date:** 2026-03-14
-> **Status:** Complete
+> **Status:** Complete — Phase 1 implemented (see *Implementation notes*)
+
+## Implementation notes (2026-08-30)
+
+Phase 1 shipped in full: heuristic metrics in `src/quality.py`, NIMA in
+`src/nima.py`, both recorded under `aesthetic` in each day's metadata JSON.
+Three details differ from the plan below, and the sections that follow are
+left as originally written rather than retconned.
+
+1. **The recommended weight source does not exist.**
+   [truskovskiyk/nima.pytorch](https://github.com/truskovskiyk/nima.pytorch),
+   cited in §2 as MIT-licensed weights, marks its pretrained model "In
+   Progress" and ships none. The weights actually used come from
+   [titu1994/neural-image-assessment](https://github.com/titu1994/neural-image-assessment)
+   (also MIT), the only NIMA release found with a stable, checksum-pinnable
+   download.
+2. **MobileNet-v1, not v2.** That release's backbone is MobileNet-v1
+   (0.0804 EMD on the AVA validation split). The weights are Keras format,
+   converted once to PyTorch layout by `models/download_models.py`; the port
+   is verified against the original Keras graph to 2.4e-07 max absolute
+   difference. Size and inference cost are as estimated in §2: 13 MB, ~60 ms
+   per image warm.
+3. **`score` was not replaced by the NIMA mean.** The §6 schema example shows
+   both fields holding the same value. They are kept separate instead —
+   `score` stays the heuristic signal so its meaning is stable across every
+   record ever published, with `nima_mean` / `nima_std` alongside it.
+
+Phases 2 and 3 remain as described: revisit once six-plus months of scores
+have accumulated.
+
+---
 
 ## Summary
 
@@ -42,7 +72,7 @@ aesthetic quality. There is no mechanism to learn from past outputs.
 | **Inference (CPU, 224×224)** | ~200–500 ms on modern Intel/AMD (GitHub Actions runner) |
 | **Output** | Rating distribution [1–10]; mean ≈ aesthetic score, std ≈ uncertainty |
 | **Training data** | AVA dataset (255k images with human aesthetic ratings) |
-| **Code license** | MIT ([truskovskiyk/nima.pytorch](https://github.com/truskovskiyk/nima.pytorch)) ✅ |
+| **Code license** | MIT ([truskovskiyk/nima.pytorch](https://github.com/truskovskiyk/nima.pytorch)) ✅ — but see *Implementation notes*: this repo ships no weights |
 | **Weight license** | MIT ✅ |
 | **New dependencies** | None — uses PyTorch (already in bauhaus) + torchvision (already in bauhaus) |
 | **Strengths** | Lightweight, well-understood, MIT-licensed, no new deps, distributional output |
