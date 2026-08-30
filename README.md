@@ -89,6 +89,7 @@ Base URL: `https://bauhaus.cascadiacollections.workers.dev`
 | `GET /api/YYYY-MM-DD.json` | Metadata for a specific date |
 | `GET /api/YYYY-MM-DD.manifest.json` | Variant manifest for a specific date |
 | `GET /api/YYYY-MM-DD.json.sig` | Detached PGP signature over that date's metadata JSON (404 when signing is off) |
+| `GET /api/archive` | The dates that have published artwork, newest first (paginated) |
 | `GET /api/health` | Publish freshness for uptime monitoring — `200` when current, `503` when stale |
 | `POST /api/vitals` | Ingest Web Vitals RUM (Analytics Engine) |
 | `POST /api/err` | Ingest JS error RUM (Analytics Engine) |
@@ -100,7 +101,48 @@ All `GET` endpoints also support `HEAD` — returns the same response headers (i
 | Endpoint pattern | `Cache-Control` |
 |-----------------|----------------|
 | `/api/today*` | `public, max-age=300, s-maxage=3600, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; the edge TTL stays below the 24h publish interval so a PoP cannot serve yesterday's artwork past the next run |
+| `/api/archive` | Same as `/api/today*` — the index gains an entry every morning, so it cannot be immutable |
 | `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed. The check runs twice, once before the fetch so a collision costs nothing and once immediately before the first upload, which is the one that closes the race |
+
+### Archive index
+
+Every other date endpoint requires knowing the date already. `/api/archive`
+answers which dates exist, so a gallery or a "random past day" consumer has
+something to enumerate:
+
+```bash
+curl -s https://bauhaus.cascadiacollections.workers.dev/api/archive?limit=3
+```
+
+```json
+{
+  "dates": ["2026-08-30", "2026-08-29", "2026-08-28"],
+  "count": 3,
+  "total": 184,
+  "next": "/api/archive?limit=3&before=2026-08-28"
+}
+```
+
+| Query parameter | Values | Description |
+|-----------------|--------|-------------|
+| `limit` | 1–1000 (default 100) | Dates per page |
+| `before` | `YYYY-MM-DD` | Return only dates earlier than this one |
+
+Paging is by date rather than an opaque cursor: dates are immutable, so a
+`next` link means the same thing tomorrow as it does today and can be
+constructed by hand. `next` is absent on the last page. An invalid `limit` or
+`before` is a `400` rather than a silently corrected page. A `truncated: true`
+field, which should not occur for decades, means the listing hit its internal
+round-trip cap and `total` counts only what was walked.
+
+Fetch each date's metadata or image with the regular endpoints:
+
+```bash
+BASE=https://bauhaus.cascadiacollections.workers.dev
+for date in $(curl -s "$BASE/api/archive?limit=5" | jq -r '.dates[]'); do
+  curl -s "$BASE/api/$date.json" | jq -r '"\(.date)  \(.title) — \(.artist)"'
+done
+```
 
 ### Responsive image consumer snippet
 

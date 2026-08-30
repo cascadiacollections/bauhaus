@@ -9,6 +9,7 @@
  *   GET|HEAD /api/:date/original      → original unstylized image
  *   GET|HEAD /api/:date.json          → metadata for date
  *   GET|HEAD /api/:date.manifest.json → responsive manifest for date
+ *   GET|HEAD /api/archive             → dates that have published artwork
  *   POST     /api/vitals              → ingest Web Vitals RUM (Analytics Engine)
  *   POST     /api/err                 → ingest JS error RUM (Analytics Engine)
  *
@@ -348,6 +349,169 @@ const IMMUTABLE_CACHE = "public, max-age=31536000, s-maxage=31536000, immutable"
  */
 const TODAY_CACHE = "public, max-age=300, s-maxage=3600, stale-while-revalidate=604800";
 
+// ---------------------------------------------------------------------------
+// Archive index
+// ---------------------------------------------------------------------------
+
+/** Dates returned by /api/archive when the caller does not ask for a size. */
+const ARCHIVE_DEFAULT_LIMIT = 100;
+
+/** Ceiling on ?limit=. A year of art is 365 dates, so this is several pages. */
+const ARCHIVE_MAX_LIMIT = 1000;
+
+/**
+ * Cap on R2 list() round trips per archive request.
+ *
+ * The whole `metadata/` prefix is drained so the newest dates can be served
+ * first — R2 lists ascending, and the newest page is the one every caller
+ * wants. At one publish per day and 1000 keys per call, this bounds the walk
+ * at roughly 68 years of art while stopping a pathologically large bucket
+ * (a stray prefix, a bulk import) from pinning the Worker.
+ */
+const ARCHIVE_MAX_LIST_CALLS = 25;
+
+/**
+ * Extracts the publish date from a metadata object key, or null if the key is
+ * not one.
+ *
+ * Deliberately strict about the `.json` suffix: the same prefix also holds
+ * `<date>.json.sig` when signing is enabled, and counting both would report
+ * every signed day twice.
+ */
+export function dateFromMetadataKey(key: string): string | null {
+  const match = key.match(/^metadata\/(\d{4})\/(\d{2})\/(\d{2})\.json$/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+}
+
+export interface ArchiveQuery {
+  limit: number;
+  before: string | null;
+}
+
+/**
+ * Parses ?limit= and ?before=, or returns an error message for the caller.
+ *
+ * Invalid values are rejected rather than clamped, for the same reason
+ * `?format=` is: a silently corrected `?limit=abc` looks like it worked and
+ * quietly returns a different page than the caller asked for.
+ */
+export function parseArchiveQuery(url: URL): ArchiveQuery | { error: string } {
+  const rawLimit = url.searchParams.get("limit");
+  let limit = ARCHIVE_DEFAULT_LIMIT;
+  if (rawLimit !== null) {
+    if (!/^\d+$/.test(rawLimit)) {
+      return { error: "limit must be a positive integer" };
+    }
+    limit = parseInt(rawLimit, 10);
+    if (limit < 1 || limit > ARCHIVE_MAX_LIMIT) {
+      return { error: `limit must be between 1 and ${ARCHIVE_MAX_LIMIT}` };
+    }
+  }
+
+  const before = url.searchParams.get("before");
+  if (before !== null && !/^\d{4}-\d{2}-\d{2}$/.test(before)) {
+    return { error: "before must be a date in YYYY-MM-DD form" };
+  }
+
+  return { limit, before };
+}
+
+/**
+ * Every published date, oldest first.
+ *
+ * R2 lists keys in lexicographic order and the keys are `metadata/YYYY/MM/DD`,
+ * so lexicographic order is already chronological order — no sorting needed.
+ */
+async function listPublishedDates(
+  bucket: R2Bucket,
+): Promise<{ dates: string[]; complete: boolean }> {
+  const dates: string[] = [];
+  let cursor: string | undefined;
+  let complete = false;
+
+  for (let call = 0; call < ARCHIVE_MAX_LIST_CALLS; call++) {
+    const page = await bucket.list({ prefix: "metadata/", cursor });
+    for (const object of page.objects) {
+      const date = dateFromMetadataKey(object.key);
+      if (date) dates.push(date);
+    }
+    if (!page.truncated) {
+      complete = true;
+      break;
+    }
+    cursor = page.cursor;
+  }
+
+  return { dates, complete };
+}
+
+/**
+ * Builds one page of the archive index from the full date list.
+ *
+ * Paging is by date rather than an opaque cursor: dates are immutable and
+ * meaningful, so `?before=` survives new publishes, can be constructed by hand,
+ * and means the same thing tomorrow as it does today.
+ */
+export interface ArchivePage {
+  dates: string[];
+  count: number;
+  total: number;
+  next?: string;
+  truncated?: true;
+}
+
+export function buildArchivePage(
+  listing: { dates: string[]; complete: boolean },
+  query: ArchiveQuery,
+): ArchivePage {
+  const newestFirst = [...listing.dates].reverse();
+  const eligible = query.before === null
+    ? newestFirst
+    : newestFirst.filter((date) => date < query.before!);
+  const page = eligible.slice(0, query.limit);
+
+  const body: ArchivePage = {
+    dates: page,
+    count: page.length,
+    total: listing.dates.length,
+  };
+  if (eligible.length > page.length) {
+    body.next = `/api/archive?limit=${query.limit}&before=${page[page.length - 1]}`;
+  }
+  // The walk stopped at ARCHIVE_MAX_LIST_CALLS, so `total` counts what was
+  // seen rather than what exists. Say so instead of reporting a short count as
+  // if it were the whole archive.
+  if (!listing.complete) body.truncated = true;
+  return body;
+}
+
+/**
+ * GET|HEAD /api/archive — which dates have published artwork.
+ *
+ * Without this, the archive is undiscoverable: every other date endpoint
+ * requires the caller to already know the date, so a gallery or a "random past
+ * day" consumer has nothing to enumerate and has to guess.
+ */
+async function serveArchive(
+  bucket: R2Bucket,
+  url: URL,
+  isHead: boolean,
+): Promise<Response> {
+  const query = parseArchiveQuery(url);
+  if ("error" in query) return errorResponse(400, query.error);
+
+  const body = buildArchivePage(await listPublishedDates(bucket), query);
+  const headers = {
+    "Content-Type": "application/json",
+    // The newest page gains an entry every morning, so this tracks /api/today
+    // rather than the immutable per-date resources it indexes.
+    "Cache-Control": TODAY_CACHE,
+    ...corsHeaders(),
+  };
+
+  return new Response(isHead ? null : JSON.stringify(body), { status: 200, headers });
+}
+
 /** Builds the shared response headers for image endpoints. */
 function buildImageHeaders(
   key: string,
@@ -628,6 +792,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
       );
     }
 
+    // GET|HEAD /api/archive → the dates that have published artwork
+    if (path === "/api/archive") {
+      return serveArchive(env.BUCKET, url, isHead);
+    }
+
     if (hasInvalidFormat(url)) {
       return errorResponse(400, "Unsupported format. Use avif, webp, jpeg, or auto");
     }
@@ -693,5 +862,5 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`, isHead);
     }
 
-    return notFound("Not found. Try /api/today or /api/YYYY-MM-DD");
+    return notFound("Not found. Try /api/today, /api/YYYY-MM-DD, or /api/archive");
 }
