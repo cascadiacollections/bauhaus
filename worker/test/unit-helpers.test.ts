@@ -316,3 +316,146 @@ describe("metadata signature route", () => {
     expect(res.status).toBe(304);
   });
 });
+
+describe("archive index", () => {
+  function envWithList(keys: string[], pageSize = 1000) {
+    const calls: (string | undefined)[] = [];
+    const bucket = {
+      get: async () => null,
+      head: async () => null,
+      list: async (opts?: R2ListOptions) => {
+        calls.push(opts?.cursor);
+        const start = opts?.cursor ? parseInt(opts.cursor, 10) : 0;
+        const slice = keys.slice(start, start + pageSize);
+        const end = start + slice.length;
+        return {
+          objects: slice.map((key) => ({ key })),
+          truncated: end < keys.length,
+          cursor: String(end),
+        } as unknown as R2Objects;
+      },
+    };
+    return {
+      env: {
+        BUCKET: bucket as unknown as R2Bucket,
+        WEB_VITALS: { writeDataPoint() {} } as unknown as AnalyticsEngineDataset,
+        WEB_ERRORS: { writeDataPoint() {} } as unknown as AnalyticsEngineDataset,
+        ALLOWED_ORIGINS: "",
+      },
+      calls,
+    };
+  }
+
+  function metadataKeys(dates: string[]): string[] {
+    return dates.map((d) => `metadata/${d.replace(/-/g, "/")}.json`);
+  }
+
+  const THREE_DAYS = ["2026-08-28", "2026-08-29", "2026-08-30"];
+
+  it("lists published dates newest first", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      dates: ["2026-08-30", "2026-08-29", "2026-08-28"],
+      count: 3,
+      total: 3,
+    });
+  });
+
+  it("returns an empty index rather than a 404 when nothing is published", async () => {
+    const { env } = envWithList([]);
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ dates: [], count: 0, total: 0 });
+  });
+
+  it("ignores detached signatures so signed days are not counted twice", async () => {
+    const keys = [...metadataKeys(THREE_DAYS), "metadata/2026/08/30.json.sig"];
+    const { env } = envWithList(keys);
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+
+    expect(await res.json()).toMatchObject({ count: 3, total: 3 });
+  });
+
+  it("pages with ?limit and hands back a ?before link", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const res = await worker.fetch(new Request("https://x/api/archive?limit=2"), env);
+
+    expect(await res.json()).toEqual({
+      dates: ["2026-08-30", "2026-08-29"],
+      count: 2,
+      total: 3,
+      next: "/api/archive?limit=2&before=2026-08-29",
+    });
+  });
+
+  it("omits the next link on the last page", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const res = await worker.fetch(new Request("https://x/api/archive?before=2026-08-29"), env);
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body).toEqual({ dates: ["2026-08-28"], count: 1, total: 3 });
+    expect(body).not.toHaveProperty("next");
+  });
+
+  it("follows R2 pagination to cover the whole prefix", async () => {
+    const dates = Array.from({ length: 5 }, (_, i) => `2026-08-${String(i + 10)}`);
+    const { env, calls } = envWithList(metadataKeys(dates), 2);
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+
+    expect(await res.json()).toMatchObject({ total: 5, dates: [...dates].reverse() });
+    expect(calls.length).toBe(3);
+  });
+
+  it("flags a listing that hit the round-trip cap rather than under-reporting", async () => {
+    // One key per R2 page forces more round trips than the walk allows, which
+    // is the shape of the failure: `total` counts what was seen, not what exists.
+    const dates = Array.from({ length: 30 }, (_, i) => `2026-07-${String(i + 1).padStart(2, "0")}`);
+    const { env } = envWithList(metadataKeys(dates), 1);
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+    const body = (await res.json()) as Record<string, unknown>;
+
+    expect(body.truncated).toBe(true);
+    expect(body.total).toBe(25);
+  });
+
+  it("does not flag a complete listing", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const body = (await (await worker.fetch(new Request("https://x/api/archive"), env)).json()) as Record<string, unknown>;
+
+    expect(body).not.toHaveProperty("truncated");
+  });
+
+  it("rejects invalid paging parameters instead of silently correcting them", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    for (const query of ["?limit=abc", "?limit=0", "?limit=1001", "?before=yesterday"]) {
+      const res = await worker.fetch(new Request(`https://x/api/archive${query}`), env);
+      expect(res.status, query).toBe(400);
+    }
+  });
+
+  it("answers HEAD with the same headers and no body", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const res = await worker.fetch(
+      new Request("https://x/api/archive", { method: "HEAD" }),
+      env,
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("application/json");
+    expect(await res.text()).toBe("");
+  });
+
+  it("caches on the same short TTL as /api/today, since it gains a date daily", async () => {
+    const { env } = envWithList(metadataKeys(THREE_DAYS));
+    const res = await worker.fetch(new Request("https://x/api/archive"), env);
+
+    expect(res.headers.get("Cache-Control")).toBe(
+      "public, max-age=300, s-maxage=3600, stale-while-revalidate=604800",
+    );
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("*");
+  });
+});

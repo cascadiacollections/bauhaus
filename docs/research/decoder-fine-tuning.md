@@ -1,8 +1,18 @@
 # Research: Fine-tune Decoder on Curated High-Quality Stylizations
 
-> **Issue:** [#10 — Research: Fine-tune decoder on curated high-quality stylizations](https://github.com/cascadiacollections/bauhaus/issues/10)
-> **Date:** 2026-03-14
-> **Status:** Complete
+> **Issue:** [#2 — Research: Fine-tune decoder on curated high-quality stylizations](https://github.com/cascadiacollections/bauhaus/issues/2)
+> **Date:** 2026-03-14 · consolidated 2026-08-30
+> **Status:** Complete — not yet implemented
+> **Depends on:** [#1 — Architecture evaluation](https://github.com/cascadiacollections/bauhaus/issues/1) (closed — staying with AdaIN, see [style-transfer-architectures.md](style-transfer-architectures.md))
+
+> **Consolidation note.** Two documents answered this question: this one and
+> `fine-tune-decoder.md`, written the same day with different structures and
+> figures that contradicted each other on the decoder's size. They are now one
+> document — this one. Every conflict was resolved against the actual
+> `decoder.pth`: 3,505,219 parameters across 18 tensors in a 14.0 MB file, so
+> the "~1.7 M parameters / 6.8 MB" figures in the deleted document were wrong.
+> The header there cited the right issue (#2), which is why this one now does
+> too.
 
 ## Summary
 
@@ -23,8 +33,8 @@ a training plan if viable.
 | Property | Value |
 |---|---|
 | **Architecture** | Mirror of VGG-19 encoder (conv → upsample, 3 upsample stages) |
-| **Parameters** | ~3.5 M (9 Conv2d layers) |
-| **Weight file** | `decoder.pth` (~15 MB) |
+| **Parameters** | 3,505,219 (9 Conv2d layers, 18 tensors) |
+| **Weight file** | `decoder.pth` (14.0 MB) |
 | **Training data (original)** | MS-COCO (content, ~80k images) + WikiArt (style, ~80k images) |
 | **Training losses (original)** | Content loss (VGG `relu4_1` features) + style loss (mean/std of `relu1_1` through `relu4_1`) |
 | **Known limitations** | Can blur fine content structure; occasional color bleeding; checkerboard artifacts from nearest-neighbor upsampling |
@@ -124,8 +134,22 @@ Style features   ──►       ↗
 - **Learning rate:** 1e-5 to 5e-5 (10–50× lower than original training rate of 1e-4)
 - **Optimizer:** Adam (β₁=0.9, β₂=0.999), same as original
 - **Batch size:** 4–8 (limited by GPU memory at 512×512 resolution)
+- **Input:** 512×512 random crops
 - **Epochs:** 10–20 over the curated dataset
 - **Regularization:** Weight decay 1e-4; early stopping on validation loss
+
+Written out, the objective is:
+
+```
+L_total = L_content + λ_style × L_style + λ_tv × L_tv
+
+L_content = ||f(g(t)) - t||₂                                  content features of the decoded
+                                                              output against the AdaIN target
+L_style   = Σ ||μ(φ(g(t))) - μ(φ(s))||₂
+          + ||σ(φ(g(t))) - σ(φ(s))||₂                          per-layer mean/std matching
+L_tv                                                          total variation, penalising the
+                                                              checkerboard texture
+```
 
 **Losses:**
 
@@ -163,7 +187,7 @@ Train separate decoder variants for each style family:
 
 - **Advantage:** Maximum quality per style family; each decoder can specialize
 - **Disadvantage:** 4× model storage (~60 MB total); requires routing logic in inference;
-  complicates `download_models.sh`; maintenance burden
+  complicates `models/download_models.py`; maintenance burden
 
 **Not recommended** for initial exploration. Consider only if Strategy 1 reveals that a
 single decoder cannot handle all 10 styles well.
@@ -191,13 +215,13 @@ of 20–40 curated pairs.
 | **Peak VRAM (512×512, batch 4)** | ~3–4 GB | ~2–3 GB |
 | **Peak RAM (CPU)** | ~4–6 GB | ~3–4 GB |
 | **Disk (dataset)** | ~200 MB (300 pairs at 512×512 JPEG) | Same |
-| **Disk (checkpoints)** | ~15 MB per checkpoint | Same |
+| **Disk (checkpoints)** | ~14 MB per checkpoint | Same |
 
 ### Cloud GPU cost (if needed)
 
 | Provider | GPU | Cost | Time for Strategy 1 |
 |---|---|---|---|
-| Google Colab (free) | T4 (15 GB) | $0 | ~20 min |
+| Google Colab (free) | T4 (15 GB) | $0 | ~20 min (sessions time out; needs babysitting) |
 | Google Colab Pro | T4/A100 | $10/mo | ~10 min |
 | Lambda Cloud | A10 (24 GB) | $0.75/hr | ~10 min ($0.13) |
 | Vast.ai | RTX 3090 | ~$0.30/hr | ~10 min ($0.05) |
@@ -216,7 +240,7 @@ small (200–400 pairs). Even on a free-tier Colab T4, training completes in und
 | **GitHub Actions (CPU, free tier)** | ⚠️ Possible but slow | 4–8 hours for Strategy 1; risks 6-hour job timeout; blocks runner |
 | **GitHub Actions (GPU, paid)** | ❌ Not available | GitHub-hosted GPU runners are in limited preview and expensive |
 | **Self-hosted runner with GPU** | ✅ Viable | Requires maintaining a GPU machine; overkill for infrequent training |
-| **Train locally, commit weights** | ✅ Recommended | Train once on local GPU or Colab; commit updated `decoder.pth` (~15 MB) |
+| **Train locally, commit weights** | ✅ Recommended | Train once on local GPU or Colab; commit updated `decoder.pth` (14 MB) |
 
 ### Recommended workflow: Train locally, commit weights
 
@@ -233,18 +257,18 @@ Developer machine (or Colab)           GitHub repository
 This approach is practical because:
 
 1. **Fine-tuning is infrequent** — done once or when the style palette changes, not on every PR.
-2. **The weight file is small** — `decoder.pth` at ~15 MB is well under GitHub's 100 MB file
+2. **The weight file is small** — `decoder.pth` at 14 MB is well under GitHub's 100 MB file
    limit and comparable to the current committed style images.
 3. **Reproducibility** — commit the training script and hyperparameters alongside the weights
    so the process can be repeated.
-4. **No CI infrastructure changes** — the existing `download_models.sh` would be updated to
+4. **No CI infrastructure changes** — the existing `models/download_models.py` would be updated to
    fetch the fine-tuned weights from a GitHub release instead of naoto0804's release.
 
 ### Weight distribution
 
-Rather than committing the 15 MB weight file directly to the Git history, the fine-tuned
+Rather than committing the 14 MB weight file directly to the Git history, the fine-tuned
 weights should be published as a **GitHub Release asset** (matching the current pattern in
-`download_models.sh`), and the download script updated accordingly. This keeps the repository
+`models/download_models.py`), and the download script updated accordingly. This keeps the repository
 lightweight and avoids Git LFS.
 
 ---
@@ -281,6 +305,15 @@ Fine-tuning is considered successful if:
 - Total variation decreases (fewer artifacts)
 - Qualitative A/B test prefers fine-tuned output ≥60% of the time
 - No new failure modes introduced (e.g., color shift, mode collapse)
+
+These are hold-the-line thresholds on content and style, with artifact
+reduction as the one metric expected to actually improve. An earlier draft of
+this research instead set a ≥10% *improvement* in style loss as the bar. That
+is the wrong target: style loss measures how closely output statistics track
+the style reference, and driving it down on a curated set rewards
+over-stylization — exactly the failure mode the curation step is there to
+reject. Treat a style-loss improvement as a welcome side effect, never as the
+goal.
 
 ---
 
@@ -321,7 +354,7 @@ The training script should depend only on existing project dependencies (`torch`
 ### Phase 4 — Integration (estimated: 2–3 hours)
 
 1. Publish fine-tuned `decoder.pth` as a GitHub Release asset.
-2. Update `models/download_models.sh` to fetch from the new release URL.
+2. Update `models/download_models.py` to fetch from the new release URL.
 3. Update cache key in `.github/workflows/generate.yml` (e.g., `adain-models-v2`).
 4. Add the training script and a brief training log to the repository.
 5. Update README.md to note that the decoder has been fine-tuned.
@@ -376,10 +409,27 @@ Fine-tuning the AdaIN decoder is **feasible and recommended** as a low-effort im
 
 ### Recommended next steps
 
-1. Open an implementation issue for Phase 1 (dataset curation) and Phase 2 (training script).
-2. Use Google Colab (free T4) for initial training experiments.
-3. Evaluate results against the success criteria defined in Section 6.
-4. If successful, publish fine-tuned weights and update `download_models.sh`.
+Worth doing, but not first. Higher-impact work — resolution, quality scoring,
+per-region alpha — changes what the decoder is being asked to reconstruct, and
+their cumulative effect may shrink the gap fine-tuning is meant to close.
+Curating a dataset before they land means curating against outputs the pipeline
+no longer produces.
+
+1. Let the higher-impact pipeline changes land and run in production for a few
+   weeks first.
+2. Open an implementation issue for Phase 1 (dataset curation) and Phase 2
+   (training script).
+3. Curate from production outputs rather than a synthetic sweep. Since
+   2026-08-30 every published image records a NIMA aesthetic score in its
+   metadata (see [aesthetic-feedback-loop.md](aesthetic-feedback-loop.md)), so
+   `nima_mean` can pre-rank candidates and manual review only has to confirm
+   the shortlist — which is most of the 4–6 hours Phase 1 estimates. Note that
+   ranking by a score the decoder is then trained toward risks teaching it to
+   satisfy NIMA rather than a human; the manual confirmation step is what keeps
+   that honest, so do not skip it.
+4. Use Google Colab (free T4) for initial training experiments.
+5. Evaluate results against the success criteria defined in Section 6.
+6. If successful, publish fine-tuned weights and update `models/download_models.py`.
 
 ---
 
