@@ -51,13 +51,26 @@ SKIP_SUBJECT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# Network failures tolerated before a source is declared unreachable.
 MAX_ATTEMPTS = 10
+
+# Candidate artworks examined before a source is declared unco-operative.
+#
+# This is a separate budget from MAX_ATTEMPTS, and deliberately larger. Both
+# used to come out of one counter of ten, so a source that was perfectly
+# healthy but kept offering portrait-format paintings — the Met routinely does;
+# `landscapes_only` rejects every one of them — exhausted the same budget an
+# outage would, and the run died having never seen a single network error. That
+# is what happened on 2026-08-31: one NSFW title, two portrait rejections, and
+# seven searches that returned nothing usable were enough to end the day with
+# no artwork published at all.
+MAX_CANDIDATES = 25
 
 # Backoff between *network* retries. Without it a source that is down absorbs
 # all ten attempts in about two seconds and the run dies having given the
 # upstream no time to recover — the opposite of what a retry loop is for.
-# Content rejections (NSFW title, quality gate) do not sleep: those consume an
-# attempt but nothing upstream needs to recover.
+# Content rejections (NSFW title, quality gate) do not sleep: those consume a
+# candidate but nothing upstream needs to recover.
 RETRY_BACKOFF_BASE_SEC = 1.5
 RETRY_BACKOFF_MAX_SEC = 20.0
 
@@ -74,6 +87,21 @@ def _sleep_before_retry(attempt: int) -> None:
     if attempt >= MAX_ATTEMPTS - 1:
         return
     time.sleep(_retry_delay(attempt))
+
+
+def _exhausted(name: str, network_failures: int, candidates: int) -> RuntimeError:
+    """Build the error for a source that ran out of one of its two budgets.
+
+    The two exhaustion modes want different responses — an unreachable source
+    is an outage to wait out, a source whose candidates all get filtered is a
+    reason to try a different collection — so the message says which happened.
+    """
+    if network_failures >= MAX_ATTEMPTS:
+        return RuntimeError(f"Failed to fetch from {name} after {MAX_ATTEMPTS} attempts")
+    return RuntimeError(
+        f"Failed to fetch from {name}: all {candidates} candidate artworks were "
+        "rejected by the NSFW, subject, or quality filters"
+    )
 
 
 @dataclass(slots=True)
@@ -161,7 +189,10 @@ def _check_quality(image_bytes: bytes, landscape_orientation: bool = False) -> t
 
 def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Metropolitan Museum."""
-    for attempt in range(MAX_ATTEMPTS):
+    network_failures = 0
+    candidates = 0
+    while candidates < MAX_CANDIDATES and network_failures < MAX_ATTEMPTS:
+        candidates += 1
         try:
             dept_id = random.choice(MET_DEPARTMENTS)
             if landscapes_only:
@@ -178,6 +209,7 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
 
             obj_ids = search.get("objectIDs") or []
             if not obj_ids:
+                print(f"No Met results for department {dept_id} / '{query}'", file=sys.stderr)
                 continue
 
             obj_id = random.choice(obj_ids)
@@ -188,6 +220,7 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
 
             img_url = obj.get("primaryImage", "")
             if not img_url:
+                print(f"Met object {obj_id} has no primary image", file=sys.stderr)
                 continue
 
             title = obj.get("title", "Unknown")
@@ -218,15 +251,19 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
                 content_type=img_resp.headers.get("Content-Type", "image/jpeg"),
             )
         except requests.RequestException as e:
-            print(f"Met attempt {attempt + 1} failed: {e}", file=sys.stderr)
-            _sleep_before_retry(attempt)
+            print(f"Met attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(network_failures)
+            network_failures += 1
 
-    raise RuntimeError(f"Failed to fetch from Met Museum after {MAX_ATTEMPTS} attempts")
+    raise _exhausted("Met Museum", network_failures, candidates)
 
 
 def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
     """Fetch a random public domain artwork from the Art Institute of Chicago."""
-    for attempt in range(MAX_ATTEMPTS):
+    network_failures = 0
+    candidates = 0
+    while candidates < MAX_CANDIDATES and network_failures < MAX_ATTEMPTS:
+        candidates += 1
         try:
             page = random.randint(1, 5000)
             resp = _get(
@@ -238,6 +275,7 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
 
             data = resp.get("data", [])
             if not data or not data[0].get("image_id"):
+                print(f"No usable AIC artwork on page {page}", file=sys.stderr)
                 continue
 
             item = data[0]
@@ -281,10 +319,11 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
                 content_type="image/jpeg",
             )
         except requests.RequestException as e:
-            print(f"AIC attempt {attempt + 1} failed: {e}", file=sys.stderr)
-            _sleep_before_retry(attempt)
+            print(f"AIC attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(network_failures)
+            network_failures += 1
 
-    raise RuntimeError(f"Failed to fetch from AIC after {MAX_ATTEMPTS} attempts")
+    raise _exhausted("AIC", network_failures, candidates)
 
 
 def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> Artwork:
@@ -296,7 +335,10 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
             "UNSPLASH_ACCESS_KEY is not set. Unsplash needs an API key; the "
             "CC0 museum sources do not — try --source met or --source artic."
         ) from None
-    for attempt in range(MAX_ATTEMPTS):
+    network_failures = 0
+    candidates = 0
+    while candidates < MAX_CANDIDATES and network_failures < MAX_ATTEMPTS:
+        candidates += 1
         try:
             params: dict = {}
             if landscapes_only:
@@ -342,10 +384,11 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
                 photographer_url=user.get("links", {}).get("html", ""),
             )
         except requests.RequestException as e:
-            print(f"Unsplash attempt {attempt + 1} failed: {e}", file=sys.stderr)
-            _sleep_before_retry(attempt)
+            print(f"Unsplash attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            _sleep_before_retry(network_failures)
+            network_failures += 1
 
-    raise RuntimeError(f"Failed to fetch from Unsplash after {MAX_ATTEMPTS} attempts")
+    raise _exhausted("Unsplash", network_failures, candidates)
 
 
 _FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
@@ -354,11 +397,19 @@ _FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
     "artic": fetch_artic,
 }
 
+# Sources a failing source may fall back to. Both are CC0 and neither needs an
+# API key, so a run that started on one and finished on the other publishes an
+# image under exactly the licence terms the scheduled pipeline promises.
+# Unsplash is deliberately absent: its images are not CC0, it needs a key that
+# may not be configured, and asking for it is always a deliberate choice.
+CC0_SOURCES = ("met", "artic")
+
 
 def fetch_artwork(
     source: str = "unsplash",
     landscapes_only: bool = True,
     quality_gate: bool = True,
+    fallback: bool = True,
 ) -> Artwork:
     """Fetch artwork from the specified source.
 
@@ -368,8 +419,29 @@ def fetch_artwork(
                          and filter out portraits, small objects, etc.
         quality_gate: When True (default), reject images that fail resolution,
                       aspect ratio, or sharpness checks during fetching.
+        fallback: When True (default), try the remaining CC0 collections if the
+                  requested one comes up empty. One museum having a bad morning
+                  used to mean no artwork was published for that date at all —
+                  and because /api/today follows latest.json, the site then
+                  served the *previous* day's image with nothing to say it was
+                  stale. Two independent collections is a much cheaper way to
+                  keep the day's slot filled than a retry of the whole run.
     """
     fetcher = _FETCHERS.get(source)
     if not fetcher:
         raise ValueError(f"Unknown source: {source}. Available: {', '.join(_FETCHERS)}")
-    return fetcher(landscapes_only=landscapes_only, quality_gate=quality_gate)
+
+    chain = [source]
+    if fallback:
+        chain += [s for s in CC0_SOURCES if s != source]
+
+    errors: list[str] = []
+    for name in chain:
+        try:
+            return _FETCHERS[name](landscapes_only=landscapes_only, quality_gate=quality_gate)
+        except RuntimeError as exc:
+            errors.append(f"{name}: {exc}")
+            if name != chain[-1]:
+                print(f"Source '{name}' produced nothing — falling back.", file=sys.stderr)
+
+    raise RuntimeError("Every source failed — " + "; ".join(errors))

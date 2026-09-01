@@ -15,7 +15,13 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: '0 4 * * *'  # 4 AM UTC (8 PM PT prev day) — off-peak
+    - cron: '0 4 * * *'   # 4 AM UTC (8 PM PT prev day) — off-peak
+    # Retry, not a second publish. Scheduled runs pass --skip-if-published, so
+    # this exits 0 in seconds on any day the 04:00 run already published. It
+    # exists for the days that one *failed*: a failed run leaves the date with
+    # no artwork, and because /api/today follows latest.json the site then
+    # serves yesterday's image until the next morning. Nothing retried that.
+    - cron: '0 10 * * *'  # 10 AM UTC — still overnight in the Americas
 
 permissions:
   contents: read

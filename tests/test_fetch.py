@@ -290,3 +290,102 @@ class TestRetryBackoff:
              pytest.raises(RuntimeError):
             fetch.fetch_met()
         assert sleep.call_count == 0
+
+
+class TestBudgets:
+    """Network failures and content rejections draw on separate budgets.
+
+    One shared counter of ten meant a healthy source offering ten portrait
+    paintings in a row looked exactly like a source that was down, and the run
+    died having never seen a network error — which is how 2026-08-31 ended with
+    no artwork published.
+    """
+
+    @staticmethod
+    def _rejected_candidate() -> MagicMock:
+        """A Met search hit whose title the subject filter always rejects."""
+        resp = MagicMock()
+        resp.json.side_effect = lambda: {
+            "objectIDs": [1],
+            "title": "Portrait of a Lady",
+            "primaryImage": "https://example.invalid/x.jpg",
+        }
+        return resp
+
+    def test_candidate_budget_exceeds_network_budget(self):
+        assert fetch.MAX_CANDIDATES > fetch.MAX_ATTEMPTS
+
+    def test_content_rejections_get_their_own_budget(self):
+        """Rejected candidates are tried MAX_CANDIDATES times, not ten."""
+        with patch("fetch._get", return_value=self._rejected_candidate()) as get, \
+             patch("fetch.time.sleep") as sleep, \
+             pytest.raises(RuntimeError, match="candidate artworks were rejected"):
+            fetch.fetch_met()
+        assert sleep.call_count == 0
+        # Two calls per candidate: the search, then the object lookup.
+        assert get.call_count == fetch.MAX_CANDIDATES * 2
+
+    def test_network_exhaustion_still_reports_attempts(self):
+        """An outage stops at MAX_ATTEMPTS rather than burning every candidate."""
+        with patch("fetch._get", side_effect=requests.RequestException("down")), \
+             patch("fetch.time.sleep"), \
+             pytest.raises(RuntimeError, match=f"after {fetch.MAX_ATTEMPTS} attempts"):
+            fetch.fetch_artic()
+
+
+class TestSourceFallback:
+    """A source that comes up empty must not cost the day its artwork."""
+
+    @staticmethod
+    def _artwork(source: str) -> Artwork:
+        return Artwork(
+            title="Landscape", artist="Anon", date="1880",
+            source=source, source_url="https://example.invalid/1",
+            image_bytes=b"jpeg",
+        )
+
+    def test_falls_back_to_the_other_cc0_source(self):
+        artic = MagicMock(return_value=self._artwork("artic"))
+        met = MagicMock(side_effect=RuntimeError("Failed to fetch from Met Museum"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic}):
+            result = fetch_artwork("met")
+        assert result.source == "artic"
+        assert met.call_count == 1
+
+    def test_no_fallback_when_the_first_source_works(self):
+        artic = MagicMock()
+        met = MagicMock(return_value=self._artwork("met"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic}):
+            assert fetch_artwork("met").source == "met"
+        assert artic.call_count == 0
+
+    def test_unsplash_is_never_a_fallback_target(self):
+        """Its licence is not CC0 and it needs a key that may not be set."""
+        assert "unsplash" not in fetch.CC0_SOURCES
+
+    def test_unsplash_falls_back_to_cc0_sources(self):
+        unsplash = MagicMock(side_effect=RuntimeError("no key"))
+        met = MagicMock(return_value=self._artwork("met"))
+        with patch.dict(fetch._FETCHERS, {"unsplash": unsplash, "met": met}):
+            assert fetch_artwork("unsplash").source == "met"
+
+    def test_fallback_can_be_disabled(self):
+        met = MagicMock(side_effect=RuntimeError("empty"))
+        artic = MagicMock()
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic}), \
+             pytest.raises(RuntimeError, match="empty"):
+            fetch_artwork("met", fallback=False)
+        assert artic.call_count == 0
+
+    def test_every_source_failing_names_them_all(self):
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(side_effect=RuntimeError("aic is down"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic}), \
+             pytest.raises(RuntimeError) as exc:
+            fetch_artwork("met")
+        assert "met is down" in str(exc.value)
+        assert "aic is down" in str(exc.value)
+
+    def test_unknown_source_still_raises_before_any_fetch(self):
+        with pytest.raises(ValueError, match="Unknown source"):
+            fetch_artwork("museum-of-nowhere")

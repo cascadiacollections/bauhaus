@@ -53,8 +53,9 @@ Automate it with a cron job, Task Scheduler, or systemd timer to get fresh art o
 ## How it works
 
 ```
-GitHub Actions (daily, 4 AM UTC / 8 PM PT)
-  1. Fetch CC0 landscape from Met/AIC (or a photo from Unsplash on demand)
+GitHub Actions (daily, 4 AM UTC / 8 PM PT; retried at 10 AM UTC)
+  1. Fetch CC0 landscape from Met/AIC (falling back to the other collection
+     if one comes up empty; or a photo from Unsplash on demand)
   2. Pick curated style ref (Monet, Hokusai, Cezanne, Turner, ...)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
   4. Score the result (heuristics + NIMA) and record it in the metadata
