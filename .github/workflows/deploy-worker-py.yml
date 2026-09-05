@@ -1,0 +1,92 @@
+name: Deploy Worker (Python)
+
+# Deliberately separate from deploy.yml. That workflow ships the TypeScript
+# worker that serves production; this one ships `bauhaus-py`, a distinct Worker
+# on its own workers.dev hostname. Keeping them apart means a failure here
+# cannot block or destabilise the production deploy, and neither can take over
+# the other's route.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'worker-py/**'
+      - '.github/workflows/deploy-worker-py.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # pywrangler builds a Pyodide virtualenv, which needs Node's
+  # --experimental-wasm-stack-switching. Node 26 removed that flag, so the
+  # major version is pinned rather than floating.
+  NODE_VERSION: '24'
+  WORKER_URL: 'https://bauhaus-py.cascadiacollections.workers.dev'
+
+concurrency:
+  group: deploy-worker-py-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy Worker (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: worker-py
+          sparse-checkout-cone-mode: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: '3.13'
+
+      - name: Install dependencies
+        working-directory: worker-py
+        run: uv sync --locked
+
+      # Re-runs the suite against the exact tree being deployed. CI already ran
+      # it on the pull request, but this job also fires on workflow_dispatch,
+      # where nothing else has verified this commit.
+      - name: Run tests
+        working-directory: worker-py
+        run: uv run pytest -q
+
+      - name: Deploy to Cloudflare Workers
+        working-directory: worker-py
+        run: uv run pywrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # Python Workers cold-start more slowly than the JS runtime, so the first
+      # request after a deploy gets a longer budget and more retries than the
+      # TypeScript worker's equivalent check.
+      - name: Post-deploy health check
+        run: |
+          sleep 5
+          STATUS=$(curl -sf --retry 4 --retry-delay 3 --max-time 30 "${{ env.WORKER_URL }}/api/today.json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('license',''))" || echo "FAILED")
+          if [ "$STATUS" != "CC0-1.0" ] && [ "$STATUS" != "Unsplash License" ]; then
+            echo "::error::Health check failed — unexpected license: $STATUS"
+            exit 1
+          fi
+          echo "::notice::Deploy successful - Python API returning valid license: $STATUS"
+
+      - name: Notify failure
+        if: failure() && env.NTFY_TOPIC != ''
+        continue-on-error: true
+        run: |
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
+            -H "Title: Python worker deployment failed" \
+            -H "Priority: high" \
+            -H "Tags: x" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "Deploy workflow for the Python worker failed. Check the run logs for details." \
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

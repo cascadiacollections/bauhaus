@@ -1,0 +1,27 @@
+# Deliberately a distinct Worker name from the TypeScript worker in ../worker,
+# so deploying this prototype cannot take over the production route.
+name = "bauhaus-py"
+main = "src/entry.py"
+compatibility_date = "2026-09-04"
+compatibility_flags = ["python_workers"]
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+# Same bucket and datasets as the TypeScript worker: the point of the prototype
+# is to serve the existing published objects unchanged.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "bauhaus"
+
+[[analytics_engine_datasets]]
+binding = "WEB_VITALS"
+dataset = "web_vitals"
+
+[[analytics_engine_datasets]]
+binding = "WEB_ERRORS"
+dataset = "web_errors"
+
+[vars]
+ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"
