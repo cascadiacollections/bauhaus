@@ -1,0 +1,14 @@
+.venv/
+.venv-workers/
+.wrangler/
+python_modules/
+__pycache__/
+.pytest_cache/
+node_modules/
+
+# Temporary. The lockfile belongs in version control, but it was generated here
+# behind a private package mirror and came out pinned to internal feed URLs that
+# would not resolve for anyone else. Regenerate with `uv lock` somewhere with
+# public PyPI access, drop these two lines, and commit the result.
+uv.lock
+pylock.toml

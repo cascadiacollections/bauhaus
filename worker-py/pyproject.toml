@@ -1,0 +1,32 @@
+[project]
+name = "bauhaus-worker-py"
+version = "0.1.0"
+description = "FastAPI port of the Bauhaus API, running on Cloudflare Python Workers"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+]
+
+[dependency-groups]
+dev = [
+    "workers-py",
+    "workers-runtime-sdk",
+    "pytest>=9.1.1",
+    "httpx>=0.28",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+exclude = [".venv", ".venv-workers", ".wrangler", "python_modules"]
+
+[tool.ruff.lint]
+# Mirrors the root pyproject.toml so both Python trees are held to one standard.
+select = ["E", "F", "I", "B", "S", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
