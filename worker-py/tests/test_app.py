@@ -7,6 +7,7 @@ import json
 import pytest
 from conftest import make_client
 from fakes import FakeBucket, FakeEnv, bucket_with_day
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from bauhaus_api.logic import IMMUTABLE_CACHE, TODAY_CACHE
 
@@ -262,6 +263,26 @@ class TestErrors:
         assert r.status_code == 405
         assert r.json() == {"error": "Method not allowed"}
         assert r.headers["access-control-allow-origin"] == "*"
+
+    async def test_framework_error_body_never_echoes_exception_detail(self, client):
+        """A framework-raised HTTPException must not leak its detail to the client.
+
+        Starlette builds exc.detail from arbitrary text, and an exception's own
+        message can carry internal state such as a stack trace or an upstream
+        path. The handler maps status codes to messages this module owns, so a
+        detail set anywhere upstream can never reach a response body.
+        """
+        from bauhaus_api.app import _http_exception_handler
+
+        leaked = 'Traceback (most recent call last): File "/secret/path.py"'
+        response = await _http_exception_handler(
+            None, StarletteHTTPException(status_code=404, detail=leaked)
+        )
+
+        assert leaked not in response.body.decode()
+        assert json.loads(response.body) == {
+            "error": "Not found. Try /api/today, /api/YYYY-MM-DD, or /api/archive"
+        }
 
     async def test_options_preflight(self, client):
         r = await client.request("OPTIONS", "/api/today")

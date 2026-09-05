@@ -163,13 +163,45 @@ def _not_modified(etag: str, today: bool = False) -> Response:
     return Response(status_code=304, headers=not_modified_headers(etag, today))
 
 
+class ApiError(Exception):
+    """An error with a vetted, caller-safe message.
+
+    Carrying the message on a dedicated type keeps client-visible error text to
+    a closed set this module owns. Exception detail is never echoed back to the
+    caller, so nothing derived from an exception — a stack trace, an upstream
+    driver message, a path — can reach a response body.
+    """
+
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
+
+
+#: Messages for errors raised by the framework rather than by this module.
+#: Starlette generates these while routing, before any handler runs.
+_FRAMEWORK_MESSAGES: dict[int, str] = {
+    404: NOT_FOUND_MESSAGE,
+    405: "Method not allowed",
+}
+
+
+@app.exception_handler(ApiError)
+async def _api_error_handler(_request: Request, exc: ApiError) -> Response:
+    return _error_response(exc.status_code, exc.message)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def _http_exception_handler(_request: Request, exc: StarletteHTTPException) -> Response:
     # Starlette's default renders {"detail": ...} as plain text or JSON with a
     # different key and no CORS headers, which browsers would see as an opaque
     # CORS failure rather than the API's documented error shape.
-    detail = "Method not allowed" if exc.status_code == 405 else str(exc.detail)
-    return _error_response(exc.status_code, detail)
+    #
+    # exc.detail is deliberately not read. It is attacker-influenced in the
+    # general case and can carry text derived from an exception, which is how
+    # internal detail leaks into a public error body.
+    message = _FRAMEWORK_MESSAGES.get(exc.status_code, "Request failed")
+    return _error_response(exc.status_code, message)
 
 
 @app.middleware("http")
@@ -193,7 +225,7 @@ async def _catch_upstream_failures(
 
 def _check_format(request: Request) -> None:
     if has_invalid_format(request.query_params):
-        raise StarletteHTTPException(status_code=400, detail=INVALID_FORMAT_MESSAGE)
+        raise ApiError(400, INVALID_FORMAT_MESSAGE)
 
 
 def _negotiate(request: Request) -> ImageFormat:
