@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "FastAPI port of the Bauhaus API, running on Cloudflare Python Workers"
 requires-python = ">=3.13"
 dependencies = [
-    "fastapi",
+    "fastapi>=0.141.1",
 ]
 
 [dependency-groups]
@@ -13,6 +13,10 @@ dev = [
     "workers-runtime-sdk",
     "pytest>=9.1.1",
     "httpx>=0.28",
+    # The suite is async and drives it through anyio's pytest plugin. anyio
+    # arrives transitively via starlette, but the tests import the plugin
+    # directly, so it is declared rather than relied on as a side effect.
+    "anyio>=4.14",
 ]
 
 [tool.pytest.ini_options]

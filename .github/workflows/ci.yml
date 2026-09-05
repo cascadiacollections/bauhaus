@@ -169,3 +169,56 @@ jobs:
       - name: Run tests
         working-directory: worker
         run: npm test
+
+  # The Python port in worker-py/ ships its own dependency set and test suite,
+  # neither of which the root Python jobs cover: those resolve the root
+  # pyproject.toml, not this one.
+  worker-py:
+    name: Worker (Python port)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: worker-py
+          sparse-checkout-cone-mode: true
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: '3.13'
+
+      # --locked fails rather than silently re-resolving, so a lockfile that has
+      # drifted from pyproject.toml is a red check instead of a quiet difference
+      # between what CI tested and what deploys.
+      - name: Install dependencies
+        working-directory: worker-py
+        run: uv sync --locked
+
+      # This lockfile has twice been regenerated behind a private package
+      # mirror, which silently rewrites every artifact URL to an internal feed
+      # that no one else can resolve. Catching it here makes that a red check
+      # rather than a broken install for the next person.
+      - name: Verify lockfile resolves against public PyPI
+        working-directory: worker-py
+        run: |
+          BAD=$(grep -o 'url = "[^"]*"' uv.lock | grep -cv 'https://files\.pythonhosted\.org/' || true)
+          if [ "$BAD" -ne 0 ]; then
+            echo "::error::uv.lock has $BAD non-PyPI artifact URLs. Regenerate it with public PyPI access."
+            grep -o 'url = "[^"]*"' uv.lock | grep -v 'https://files\.pythonhosted\.org/' | head -5
+            exit 1
+          fi
+          echo "::notice::All lockfile artifact URLs point at files.pythonhosted.org"
+
+      - name: Run tests
+        working-directory: worker-py
+        run: uv run pytest -v
+
+      # Matches the root lint job: pip-audit with no target audits its own
+      # environment and reports a confident all-clear, so it is pointed at this
+      # project's resolved dependency set.
+      - name: Audit dependencies
+        working-directory: worker-py
+        run: |
+          uv export --format requirements-txt --no-hashes --no-emit-project -o requirements-audit.txt
+          uvx pip-audit -r requirements-audit.txt --progress-spinner off

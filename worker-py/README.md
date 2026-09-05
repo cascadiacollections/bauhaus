@@ -1,9 +1,12 @@
 # Bauhaus API on FastAPI (Cloudflare Python Workers)
 
 A working port of `worker/src/index.ts` to FastAPI, running on [Cloudflare Python
-Workers](https://developers.cloudflare.com/workers/languages/python/). This is a
-**prototype for evaluation**, not a replacement — the TypeScript worker in
-`../worker` remains the deployed API.
+Workers](https://developers.cloudflare.com/workers/languages/python/).
+
+It deploys as `bauhaus-py`, a **separate Worker on its own hostname**. The
+TypeScript worker in `../worker` still serves production; this one is wired up
+alongside it so it can be exercised on real infrastructure — which is the only
+way to answer the cold-start question below — without putting traffic on it.
 
 The point of doing it on Python Workers rather than a self-hosted target is that
 nothing about the deployment model changes: same edge, same CDN caching, same
@@ -50,15 +53,22 @@ FastAPI app is also exercised end-to-end without `workerd`.
 
 ```bash
 cd worker-py
-uv sync
-uv run pytest              # 134 tests, ~0.2s
+uv sync --locked
+uv run pytest              # 135 tests, ~0.2s
 uv run pywrangler dev      # local workerd + Pyodide
 ```
 
-> **No lockfile is committed yet.** It was generated here behind a private
-> package mirror, so `uv.lock` and `pylock.toml` came out pinned to internal
-> feed URLs that would not resolve for anyone else. Run `uv lock` on a machine
-> with public PyPI access and commit the result.
+## CI and deployment
+
+- **`Worker (Python port)`** in `.github/workflows/ci.yml` runs `uv sync
+  --locked`, the test suite, and `pip-audit` against this project's resolved
+  dependencies. The root Python jobs resolve the root `pyproject.toml` and do
+  not cover this tree; `ruff` is the one check shared with them, since the root
+  lint job lints the whole repository.
+- **`.github/workflows/deploy-worker-py.yml`** deploys `bauhaus-py` on pushes to
+  `main` that touch `worker-py/`, and on demand. It is a separate workflow from
+  `deploy.yml` so that a failure here cannot block or destabilise the production
+  TypeScript deploy.
 
 Seed the local R2 bucket to exercise the image routes:
 
@@ -109,14 +119,15 @@ locally.
 
 ## Verdict
 
-The port is complete and works. The open questions are operational, not
-technical:
+The port is complete, tested in CI, and deployable. The open questions are
+operational, not technical, and are why production still points at TypeScript:
 
 - **Beta runtime.** Python Workers still require the `python_workers`
   compatibility flag and are documented as beta. That is the main argument for
-  leaving the TypeScript worker deployed.
-- **Cold starts.** Needs a real measurement on deployed infrastructure against
-  the TypeScript worker before this could replace it.
+  leaving the TypeScript worker serving production.
+- **Cold starts.** Still the deciding number, and it cannot be measured locally.
+  Now that `bauhaus-py` deploys, it can be measured against the TypeScript
+  worker on real infrastructure.
 - **Body buffering.** Acceptable at these image sizes, but it is a step down
   from streaming and would matter if the artwork got much larger.
 
