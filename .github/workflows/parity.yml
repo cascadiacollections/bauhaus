@@ -1,0 +1,112 @@
+name: API parity
+
+# Differential check between the two deployed implementations: the TypeScript
+# worker that serves production and the FastAPI port in worker-py/.
+#
+# It has to run against deployed Workers rather than in a pull request, because
+# what it verifies is that both serve the *same* R2 bucket identically — the
+# ETags, stored Cache-Control values and image bytes all come from real objects.
+# A green run here is the cutover gate: it is the only evidence that the port is
+# a drop-in replacement rather than two test suites agreeing with themselves.
+on:
+  # Called by deploy-worker-py.yml once a new Python build is live.
+  workflow_call:
+    inputs:
+      reference:
+        description: Implementation treated as correct
+        type: string
+        required: false
+        default: https://bauhaus.cascadiacollections.workers.dev
+      candidate:
+        description: Implementation under test
+        type: string
+        required: false
+        default: https://bauhaus-py.cascadiacollections.workers.dev
+    secrets:
+      NTFY_TOPIC:
+        required: false
+  # Daily, well after the 04:00 UTC publish, so both sides have resolved the
+  # same new date and the archive index has grown on both.
+  schedule:
+    - cron: '30 5 * * *'
+  workflow_dispatch:
+    inputs:
+      reference:
+        description: Implementation treated as correct
+        type: string
+        required: false
+        default: https://bauhaus.cascadiacollections.workers.dev
+      candidate:
+        description: Implementation under test
+        type: string
+        required: false
+        default: https://bauhaus-py.cascadiacollections.workers.dev
+
+permissions:
+  contents: read
+
+concurrency:
+  group: parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    name: Differential conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: worker-py
+          sparse-checkout-cone-mode: true
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: '3.13'
+
+      - name: Install dependencies
+        working-directory: worker-py
+        run: uv sync --locked
+
+      # The runner's own unit tests. A comparison that cannot detect a
+      # difference would report parity for two Workers that disagree, so the
+      # tool is verified before its verdict is trusted.
+      - name: Test the runner
+        working-directory: worker-py
+        run: uv run pytest -q tests/test_parity.py
+
+      - name: Compare implementations
+        working-directory: worker-py
+        run: |
+          uv run python tools/parity.py \
+            --reference "${REFERENCE:-https://bauhaus.cascadiacollections.workers.dev}" \
+            --candidate "${CANDIDATE:-https://bauhaus-py.cascadiacollections.workers.dev}" \
+            --out parity-report.json
+        env:
+          REFERENCE: ${{ inputs.reference }}
+          CANDIDATE: ${{ inputs.candidate }}
+
+      # Uploaded on failure too — the JSON carries the full per-case detail that
+      # the log summarises.
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: parity-report
+          path: worker-py/parity-report.json
+          if-no-files-found: ignore
+
+      - name: Notify failure
+        if: failure() && env.NTFY_TOPIC != ''
+        continue-on-error: true
+        run: |
+          curl -f --max-time 10 --retry 2 --retry-delay 2 \
+            -H "Title: API parity check failed" \
+            -H "Priority: high" \
+            -H "Tags: x" \
+            -H "Actions: view, Open Run, ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "The Python and TypeScript APIs answered differently. Check the run logs." \
+            "https://ntfy.sh/$NTFY_TOPIC"
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

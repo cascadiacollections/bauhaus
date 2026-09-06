@@ -21,7 +21,9 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# tools/ holds the differential parity runner, which is not part of the Worker
+# bundle but is unit tested alongside it.
+pythonpath = ["src", "tools"]
 
 [tool.ruff]
 line-length = 110

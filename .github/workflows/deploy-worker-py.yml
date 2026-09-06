@@ -77,7 +77,7 @@ jobs:
           fi
           echo "::notice::Deploy successful - Python API returning valid license: $STATUS"
 
-      - name: Notify failure
+      - name: Notify deploy failure
         if: failure() && env.NTFY_TOPIC != ''
         continue-on-error: true
         run: |
@@ -90,3 +90,12 @@ jobs:
             "https://ntfy.sh/$NTFY_TOPIC"
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+
+  # The health check above only proves the new build answers. This proves it
+  # answers the same as the TypeScript worker serving production, which is the
+  # question that decides whether the port can take over.
+  parity:
+    name: Parity vs production
+    needs: deploy
+    uses: ./.github/workflows/parity.yml
+    secrets: inherit
