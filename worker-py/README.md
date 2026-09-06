@@ -41,7 +41,8 @@ an object body, and origin-gated telemetry CORS all behave as before.
     src/entry.py                  Worker entry point (ASGI ↔ workerd)
     src/bauhaus_api/app.py        FastAPI routes and R2 access
     src/bauhaus_api/logic.py      Pure logic — stdlib only, no FastAPI or Workers imports
-    tests/                        134 tests, runnable under plain CPython
+    tools/parity.py               Differential check against the deployed TypeScript worker
+    tests/                        170 tests, runnable under plain CPython
 
 `logic.py` is deliberately free of runtime imports. It holds the parts with real
 edge cases — negotiation, ETag comparison, archive paging, telemetry shaping —
@@ -54,9 +55,51 @@ FastAPI app is also exercised end-to-end without `workerd`.
 ```bash
 cd worker-py
 uv sync --locked
-uv run pytest              # 135 tests, ~0.2s
+uv run pytest              # 170 tests, ~0.3s
 uv run pywrangler dev      # local workerd + Pyodide
 ```
+
+## Parity with the TypeScript worker
+
+Each implementation is tested against its own expectations, so two suites
+passing only shows that two readings of the same spec agree with themselves.
+`tools/parity.py` sends one matrix of ~60 requests to **both deployed Workers**
+and diffs status, the headers that matter to clients (`Cache-Control`, `Vary`,
+`ETag`, `X-Variant`, `Content-Type`, `Accept-CH`, CORS) and the response bodies:
+
+```bash
+just worker-py-parity                       # both defaults, as CI runs it
+just worker-py-parity -- --candidate http://localhost:8787
+```
+
+Both Workers read the same bucket, so the ETag, the stored `Cache-Control` and
+the image bytes all come from the same R2 object — a difference is the serving
+layer's, not the data's. The matrix covers format negotiation, `?progressive=`
+and `?strip=`, `If-None-Match` (resolved per host, so neither side is handed the
+other's validator), HEAD, archive paging and its query validation, the
+never-published 404 path, routing edges, and the telemetry CORS rejections.
+Nothing in it writes: the `POST` cases all carry an Origin the Worker refuses,
+so they return before `writeDataPoint` and leave no rows in Analytics Engine.
+
+`/api/today*` cases are retried once before being reported, so a publish landing
+mid-run is not mistaken for a regression.
+
+It runs daily at 05:30 UTC and after every `bauhaus-py` deploy
+(`.github/workflows/parity.yml`). A green run is the cutover gate.
+
+## Cutting over
+
+The hostname is the constraint, not the runtime. `bauhaus-android` compiles
+`https://bauhaus.cascadiacollections.workers.dev` into shipped APKs in two
+places — `BauhausApi.BASE_URL` and, separately, `HttpModule.CDN_HOST`, which
+gates the `Accept`-injection interceptor that keeps Coil and the API on one
+cache key. A `workers.dev` subdomain is derived from the Worker *name*, so
+"point traffic at `bauhaus-py`" is a URL change that installed clients can never
+follow.
+
+Cutover therefore means deploying this code **under the existing `bauhaus`
+Worker name**, not switching hostnames — ideally as a gradual deployment
+(1% → 10% → 100%), where rollback is a version pin rather than a redeploy.
 
 ## CI and deployment
 
@@ -68,7 +111,11 @@ uv run pywrangler dev      # local workerd + Pyodide
 - **`.github/workflows/deploy-worker-py.yml`** deploys `bauhaus-py` on pushes to
   `main` that touch `worker-py/`, and on demand. It is a separate workflow from
   `deploy.yml` so that a failure here cannot block or destabilise the production
-  TypeScript deploy.
+  TypeScript deploy. Its post-deploy health check proves the new build answers;
+  the parity job it then calls proves it answers *the same*.
+- **`.github/workflows/parity.yml`** runs the differential check daily and on
+  demand, and is what the deploy workflow calls. It cannot run on a pull
+  request: it needs two deployed Workers.
 
 Seed the local R2 bucket to exercise the image routes:
 
@@ -119,8 +166,9 @@ locally.
 
 ## Verdict
 
-The port is complete, tested in CI, and deployable. The open questions are
-operational, not technical, and are why production still points at TypeScript:
+The port is complete, tested in CI, deployable, and continuously diffed against
+the implementation it would replace. The open questions are operational, not
+technical, and are why production still points at TypeScript:
 
 - **Beta runtime.** Python Workers still require the `python_workers`
   compatibility flag and are documented as beta. That is the main argument for
