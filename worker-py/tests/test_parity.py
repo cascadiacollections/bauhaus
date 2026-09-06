@@ -50,6 +50,14 @@ class TestNormalizeHeaders:
     def test_collapses_insignificant_whitespace(self):
         assert normalize_headers({"Vary": " Accept,  Origin "}) == {"vary": "Accept, Origin"}
 
+    def test_weak_etag_prefix_is_dropped(self):
+        # The edge weakens an ETag when it compresses the response, so the same
+        # R2 validator arrives with and without W/ depending on the transfer.
+        assert normalize_headers({"ETag": 'W/"abc"'}) == normalize_headers({"ETag": '"abc"'})
+
+    def test_a_different_etag_still_differs(self):
+        assert normalize_headers({"ETag": 'W/"abc"'}) != normalize_headers({"ETag": 'W/"def"'})
+
     def test_content_length_is_not_compared(self):
         # It tracks the transfer encoding rather than the handler; the body is
         # compared instead.
@@ -64,6 +72,10 @@ class TestCompare:
         diffs = compare(observed(status=200), observed(status=404))
         assert len(diffs) == 1
         assert "status: reference 200, candidate 404" in diffs[0]
+
+    def test_weak_and_strong_forms_of_one_etag_are_not_a_difference(self):
+        weak = observed(headers={**JSON_HEADERS, "ETag": 'W/"abc123"'})
+        assert compare(weak, observed()) == []
 
     def test_header_value_difference_is_reported(self):
         cand = observed(headers={**JSON_HEADERS, "Cache-Control": "no-store"})

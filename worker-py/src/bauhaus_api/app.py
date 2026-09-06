@@ -163,6 +163,26 @@ def _not_modified(etag: str, today: bool = False) -> Response:
     return Response(status_code=304, headers=not_modified_headers(etag, today))
 
 
+#: The Content-Type the Workers runtime puts on a string response body.
+#:
+#: The telemetry rejections in the TypeScript worker are ``new Response("Forbidden",
+#: …)``, and a string body makes the runtime set exactly this. Starlette sets no
+#: Content-Type at all for a bytes body with no media type, so the two disagreed
+#: on every telemetry rejection. Spelled out verbatim — including the missing
+#: space and the uppercase charset — rather than derived from ``media_type``,
+#: since the byte-for-byte value is the thing being matched.
+_PLAIN_TEXT = "text/plain;charset=UTF-8"
+
+
+def _text_response(status: int, text: str, headers: Mapping[str, str] | None = None) -> Response:
+    """A plain-text response shaped like the TypeScript worker's string bodies."""
+    return Response(
+        content=text.encode(),
+        status_code=status,
+        headers={"Content-Type": _PLAIN_TEXT, **(headers or {})},
+    )
+
+
 class ApiError(Exception):
     """An error with a vetted, caller-safe message.
 
@@ -357,10 +377,10 @@ async def _handle_telemetry(request: Request, kind: str) -> Response:
         return Response(status_code=204, headers=telemetry_cors_headers(origin))
 
     if request.method != "POST":
-        return Response(content=b"Method Not Allowed", status_code=405)
+        return _text_response(405, "Method Not Allowed")
 
     if origin not in allowed:
-        return Response(content=b"Forbidden", status_code=403)
+        return _text_response(403, "Forbidden")
 
     # Reject oversized requests early via Content-Length, then re-check the body
     # itself because the header is client-supplied and may be absent or a lie.
@@ -369,22 +389,22 @@ async def _handle_telemetry(request: Request, kind: str) -> Response:
     except ValueError:
         declared = 0
     if declared > TELEMETRY_BODY_LIMIT:
-        return Response(status_code=413, headers=telemetry_cors_headers(origin))
+        return _text_response(413, "Payload Too Large", telemetry_cors_headers(origin))
 
     raw = await request.body()
     try:
         body = raw.decode()
     except UnicodeDecodeError:
-        return Response(status_code=400, headers=telemetry_cors_headers(origin))
+        return _text_response(400, "Bad Request", telemetry_cors_headers(origin))
     if len(body) > TELEMETRY_BODY_LIMIT:
-        return Response(status_code=413, headers=telemetry_cors_headers(origin))
+        return _text_response(413, "Payload Too Large", telemetry_cors_headers(origin))
 
     try:
         data = json.loads(body)
     except ValueError:
-        return Response(status_code=400, headers=telemetry_cors_headers(origin))
+        return _text_response(400, "Bad Request", telemetry_cors_headers(origin))
     if not isinstance(data, Mapping):
-        return Response(status_code=400, headers=telemetry_cors_headers(origin))
+        return _text_response(400, "Bad Request", telemetry_cors_headers(origin))
 
     ua_class = classify_ua(request.headers.get("user-agent", ""))
     if kind == "vitals":

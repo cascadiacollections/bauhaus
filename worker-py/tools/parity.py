@@ -101,10 +101,34 @@ def normalize_header(value: str) -> str:
     return _WHITESPACE_RE.sub(" ", value.strip())
 
 
+def normalize_etag(value: str) -> str:
+    """Drop the ``W/`` prefix, leaving the opaque tag.
+
+    The prefix is not the handler's. Neither implementation writes one: both
+    return R2's ``httpEtag`` verbatim, from the same object, through the same
+    code path for every content type. The edge adds it when it compresses a
+    response, which is why it appears on HEAD of the JSON resources and on none
+    of the image ones — a handler-level difference could not be selective by
+    compressibility. It belongs with ``content-encoding`` and ``content-length``
+    among the properties of the connection rather than of the handler.
+
+    Only the prefix is dropped, so two implementations serving genuinely
+    different validators still differ. That is also the comparison HTTP itself
+    specifies for ``If-None-Match`` on GET and HEAD (RFC 9110 §8.8.3.2), so a
+    client revalidating against either implementation gets the same 304.
+    """
+    tag = normalize_header(value)
+    return tag[2:] if tag.startswith("W/") else tag
+
+
 def normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
     """Lowercase the compared header names and normalize their values."""
     lowered = {k.lower(): v for k, v in headers.items()}
-    return {name: normalize_header(lowered[name]) for name in COMPARED_HEADERS if name in lowered}
+    return {
+        name: normalize_etag(lowered[name]) if name == "etag" else normalize_header(lowered[name])
+        for name in COMPARED_HEADERS
+        if name in lowered
+    }
 
 
 def _is_text(headers: Mapping[str, str]) -> bool:

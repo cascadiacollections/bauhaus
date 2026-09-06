@@ -341,6 +341,47 @@ class TestTelemetry:
     async def test_get_is_405(self, client):
         assert (await client.get("/api/vitals")).status_code == 405
 
+    @pytest.mark.parametrize(
+        ("method", "headers", "status", "body"),
+        [
+            ("GET", {}, 405, "Method Not Allowed"),
+            ("POST", {"Origin": "https://evil.com"}, 403, "Forbidden"),
+            ("POST", {}, 403, "Forbidden"),
+        ],
+    )
+    async def test_rejections_are_plain_text(self, client, method, headers, status, body):
+        """The rejection bodies the TypeScript worker returns, byte for byte.
+
+        Its `new Response("Forbidden", …)` carries a text/plain Content-Type that
+        Starlette does not set for a bytes body, so these answered with no
+        Content-Type at all until it was spelled out.
+        """
+        r = await client.request(method, "/api/vitals", headers=headers)
+        assert r.status_code == status
+        assert r.text == body
+        assert r.headers["content-type"] == "text/plain;charset=UTF-8"
+
+    async def test_malformed_body_rejection_is_plain_text(self, client):
+        r = await client.post(
+            "/api/vitals", content="{not json",
+            headers={"Origin": self.ORIGIN, "Content-Type": "application/json"},
+        )
+        assert r.text == "Bad Request"
+        assert r.headers["content-type"] == "text/plain;charset=UTF-8"
+        # The CORS headers still have to survive the shorter response shape:
+        # the browser drops the response otherwise and the site loses the signal.
+        assert r.headers["access-control-allow-origin"] == self.ORIGIN
+
+    async def test_oversized_body_rejection_is_plain_text(self, client):
+        r = await client.post(
+            "/api/vitals", content=json.dumps({"name": "x" * 5000}),
+            headers={"Origin": self.ORIGIN, "Content-Type": "application/json"},
+        )
+        assert r.status_code == 413
+        assert r.text == "Payload Too Large"
+        assert r.headers["content-type"] == "text/plain;charset=UTF-8"
+        assert r.headers["access-control-allow-origin"] == self.ORIGIN
+
     async def test_oversized_body_is_413(self, client, env):
         big = json.dumps({"name": "x" * 5000})
         r = await client.post(
