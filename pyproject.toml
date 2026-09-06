@@ -8,7 +8,7 @@ license = "MIT"
 # workflows run 3.14, and .mise.toml pins 3.14. Nothing runs 3.13.
 requires-python = ">=3.14"
 dependencies = [
-    "torch>=2.13.0,<3.0",
+    "torch>=2.14.0,<3.0",
     "torchvision>=0.28.0,<1.0",
     "pillow>=12.3.0,<13.0",
     "boto3>=1.43.82,<2.0",
