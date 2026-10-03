@@ -14,6 +14,12 @@ on:
         required: false
         type: boolean
         default: false
+      runner:
+        description: "Where to run (auto prefers the self-hosted runner when it is idle)"
+        required: false
+        type: choice
+        default: auto
+        options: [auto, github-hosted, self-hosted]
   schedule:
     - cron: '0 4 * * *'   # 4 AM UTC (8 PM PT prev day) — off-peak
     # Retry, not a second publish. Scheduled runs pass --skip-if-published, so
@@ -33,8 +39,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  generate:
+  # Prefer the always-on self-hosted runner (Podman quadlet on the Fedora box) and
+  # fall back to GitHub-hosted whenever it is offline or busy. GitHub can't
+  # express "this runner, else that one", so check first and route. Listing
+  # runners needs repo Administration: read, which GITHUB_TOKEN can't have —
+  # RUNNER_STATUS_TOKEN is a fine-grained PAT scoped to this repo with only
+  # that permission. Without it, every run stays GitHub-hosted.
+  route:
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      runs-on: ${{ steps.pick.outputs.runs-on }}
+      self-hosted: ${{ steps.pick.outputs.self-hosted }}
+    steps:
+      - id: pick
+        env:
+          GH_TOKEN: ${{ secrets.RUNNER_STATUS_TOKEN }}
+          CHOICE: ${{ inputs.runner || 'auto' }}
+        run: |
+          hosted='["ubuntu-latest"]'
+          self='["self-hosted","bauhaus-fedora"]'
+          pick=hosted
+          if [ "$CHOICE" = self-hosted ]; then
+            pick=self
+          elif [ "$CHOICE" = auto ] && [ -n "$GH_TOKEN" ]; then
+            # Idle and online only: a job queued for a runner that then never
+            # picks it up would hold the concurrency group below.
+            idle=$(gh api "repos/$GITHUB_REPOSITORY/actions/runners" \
+              --jq '[.runners[] | select(.status == "online" and (.busy | not))
+                     | select(any(.labels[]; .name == "bauhaus-fedora"))] | length' \
+              2>/dev/null || echo 0)
+            [ "${idle:-0}" -gt 0 ] && pick=self
+          fi
+          if [ "$pick" = self ]; then
+            echo "runs-on=$self" >> "$GITHUB_OUTPUT"
+            echo "self-hosted=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "runs-on=$hosted" >> "$GITHUB_OUTPUT"
+            echo "self-hosted=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Routing to $pick (choice: $CHOICE, token: ${GH_TOKEN:+set})" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  generate:
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.runs-on) }}
     timeout-minutes: 20
     # Job-level env: the `secrets` context is not available in step-level `if:`
     # conditions, but `env` is — so gate values must be surfaced here.
@@ -44,12 +92,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      # GitHub-hosted only. The self-hosted image bakes in uv, and its uv cache,
+      # Python and model weights already persist on the runner's volume.
+      - if: needs.route.outputs.self-hosted != 'true'
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           python-version: '3.14'
 
-      - uses: actions/cache@v6
+      - if: needs.route.outputs.self-hosted != 'true'
+        uses: actions/cache@v6
         with:
           path: .venv
           key: venv-${{ runner.os }}-py3.14-${{ hashFiles('uv.lock') }}
@@ -57,13 +109,22 @@ jobs:
       # Keyed on the download script so that changing a pinned checksum (or the
       # release URL) evicts weights cached under the old pins. A constant key
       # can never invalidate, which would pin a bad cache entry forever.
-      - uses: actions/cache@v6
+      - if: needs.route.outputs.self-hosted != 'true'
+        uses: actions/cache@v6
         with:
           path: models/weights
           key: adain-models-${{ hashFiles('models/download_models.py') }}
 
       - name: Install dependencies
-        run: uv sync --frozen --no-dev
+        run: uv sync --frozen --no-dev --python 3.14
+
+      # Self-hosted: checkout cleans untracked files, so weights live on the
+      # runner's volume and are linked in.
+      - name: Link persistent model cache
+        if: needs.route.outputs.self-hosted == 'true'
+        run: |
+          mkdir -p "$BAUHAUS_MODELS_CACHE"
+          ln -sfn "$BAUHAUS_MODELS_CACHE" models/weights
 
       - name: Download models
         run: uv run --script models/download_models.py
@@ -72,7 +133,12 @@ jobs:
         if: env.GPG_PRIVATE_KEY != ''
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        # Per-job keyring in the job's temp dir, so the signing key never
+        # lingers on the long-lived self-hosted runner.
         run: |
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          install -d -m 700 "$GNUPGHOME"
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
@@ -114,6 +180,10 @@ jobs:
           ALLOW_UNSPLASH_FALLBACK: ${{ github.event_name == 'schedule' && 'true' || '' }}
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Remove GPG keyring
+        if: always() && env.GNUPGHOME != ''
+        run: rm -rf "$GNUPGHOME"
 
       - name: Notify success
         if: success() && env.NTFY_TOPIC != ''
