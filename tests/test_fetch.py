@@ -377,6 +377,16 @@ class TestSourceFallback:
             fetch_artwork("met", fallback=False)
         assert artic.call_count == 0
 
+    def test_emergency_fallback_respects_disabled_cc0_fallback(self):
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(return_value=self._artwork("artic"))
+        unsplash = MagicMock(return_value=self._artwork("unsplash"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic, "unsplash": unsplash}):
+            with pytest.raises(RuntimeError, match="met is down"):
+                fetch_artwork("met", fallback=False, emergency_fallback=True)
+        assert artic.call_count == 0
+        assert unsplash.call_count == 0
+
     def test_every_source_failing_names_them_all(self):
         met = MagicMock(side_effect=RuntimeError("met is down"))
         artic = MagicMock(side_effect=RuntimeError("aic is down"))

@@ -444,7 +444,7 @@ def fetch_artwork(
     chain = [source]
     if fallback:
         chain += [s for s in CC0_SOURCES if s != source]
-    if emergency_fallback and "unsplash" not in chain:
+    if fallback and emergency_fallback and "unsplash" not in chain:
         chain.append("unsplash")
 
     errors: list[str] = []
