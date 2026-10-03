@@ -325,7 +325,7 @@ class TestArticRequests:
         assert iiif_call.args[0].endswith("/abc/full/843,/0/default.jpg")
         headers = iiif_call.kwargs["headers"]
         assert "http" not in headers["User-Agent"]
-        assert "github.com" in headers["AIC-User-Agent"]
+        assert headers["AIC-User-Agent"] == fetch.USER_AGENT
 
 
 class TestBudgets:
