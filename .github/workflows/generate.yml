@@ -76,10 +76,10 @@ jobs:
           echo "$GPG_PRIVATE_KEY" | gpg --batch --import
           echo "GPG key imported."
 
-      # Scheduled runs use CC0 museum sources so every published image is
-      # uniformly CC0 and no API key is on the critical path. Unsplash stays
-      # available via the workflow_dispatch input (its licence is not CC0,
-      # so those runs produce source-dependent output).
+      # Scheduled runs prefer CC0 museum sources so published images are
+      # normally uniformly CC0 and no API key is normally on the critical
+      # path. ALLOW_UNSPLASH_FALLBACK below is the documented exception: it
+      # only engages once both CC0 collections have already failed.
       - name: Generate and upload
         run: |
           uv run python src/main.py --source "${SOURCE}" \
@@ -105,6 +105,13 @@ jobs:
           MEMORY_PROFILE: balanced
           MAX_SIZE: '1536'
           GENERATE_VARIANTS: 'true'
+          # Scheduled runs only — same reasoning as SKIP_IF_PUBLISHED above.
+          # The Met search API (410 Gone) and the AIC IIIF image host (403,
+          # Cloudflare challenge) have both been down since 2026-10-02; with
+          # neither CC0 source reachable, the run would otherwise fail every
+          # day until one of them recovers. A manual dispatch is unaffected:
+          # it names its own source and never reaches this fallback.
+          ALLOW_UNSPLASH_FALLBACK: ${{ github.event_name == 'schedule' && 'true' || '' }}
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 

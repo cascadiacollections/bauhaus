@@ -26,6 +26,7 @@ _CONTROLLED_ENV = frozenset({
     "GPG_KEY_ID", "GPG_PASSPHRASE", "GPG_PRIVATE_KEY",
     "STYLE_MODE", "LANDSCAPES_ONLY", "MEMORY_PROFILE",
     "GENERATE_VARIANTS", "MAX_SIZE", "METRICS_OUT", "METRICS_LABEL",
+    "ALLOW_UNSPLASH_FALLBACK",
 })
 
 
@@ -129,6 +130,16 @@ class TestMainOrchestration:
         with _Harness(["--any-subject"]) as h:
             main_mod.main()
         assert h.fetch.call_args.kwargs["landscapes_only"] is False
+
+    def test_emergency_fallback_defaults_off(self):
+        with _Harness([]) as h:
+            main_mod.main()
+        assert h.fetch.call_args.kwargs["emergency_fallback"] is False
+
+    def test_emergency_fallback_enabled_by_env_var(self):
+        with _Harness([], env={"ALLOW_UNSPLASH_FALLBACK": "true"}) as h:
+            main_mod.main()
+        assert h.fetch.call_args.kwargs["emergency_fallback"] is True
 
     def test_dry_run_never_uploads(self, tmp_path):
         with _Harness(["--dry-run"]) as h, patch.object(main_mod, "OUTPUT_DIR", tmp_path):

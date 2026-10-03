@@ -389,3 +389,50 @@ class TestSourceFallback:
     def test_unknown_source_still_raises_before_any_fetch(self):
         with pytest.raises(ValueError, match="Unknown source"):
             fetch_artwork("museum-of-nowhere")
+
+    def test_emergency_fallback_off_by_default(self):
+        """Both CC0 sources down must not reach for Unsplash unless asked."""
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(side_effect=RuntimeError("aic is down"))
+        unsplash = MagicMock(return_value=self._artwork("unsplash"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic, "unsplash": unsplash}), \
+             pytest.raises(RuntimeError):
+            fetch_artwork("met")
+        assert unsplash.call_count == 0
+
+    def test_emergency_fallback_tried_after_both_cc0_sources_fail(self):
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(side_effect=RuntimeError("aic is down"))
+        unsplash = MagicMock(return_value=self._artwork("unsplash"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic, "unsplash": unsplash}):
+            result = fetch_artwork("met", emergency_fallback=True)
+        assert result.source == "unsplash"
+        assert met.call_count == 1
+        assert artic.call_count == 1
+
+    def test_emergency_fallback_not_needed_when_a_cc0_source_works(self):
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(return_value=self._artwork("artic"))
+        unsplash = MagicMock()
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic, "unsplash": unsplash}):
+            result = fetch_artwork("met", emergency_fallback=True)
+        assert result.source == "artic"
+        assert unsplash.call_count == 0
+
+    def test_emergency_fallback_error_surfaces_when_everything_fails(self):
+        met = MagicMock(side_effect=RuntimeError("met is down"))
+        artic = MagicMock(side_effect=RuntimeError("aic is down"))
+        unsplash = MagicMock(side_effect=RuntimeError("no key"))
+        with patch.dict(fetch._FETCHERS, {"met": met, "artic": artic, "unsplash": unsplash}), \
+             pytest.raises(RuntimeError) as exc:
+            fetch_artwork("met", emergency_fallback=True)
+        assert "no key" in str(exc.value)
+
+    def test_emergency_fallback_is_a_noop_when_source_is_already_unsplash(self):
+        unsplash = MagicMock(side_effect=RuntimeError("no key"))
+        met = MagicMock(return_value=self._artwork("met"))
+        artic = MagicMock(side_effect=RuntimeError("aic is down"))
+        with patch.dict(fetch._FETCHERS, {"unsplash": unsplash, "met": met, "artic": artic}):
+            result = fetch_artwork("unsplash", emergency_fallback=True)
+        assert result.source == "met"
+        assert unsplash.call_count == 1

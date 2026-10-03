@@ -410,6 +410,7 @@ def fetch_artwork(
     landscapes_only: bool = True,
     quality_gate: bool = True,
     fallback: bool = True,
+    emergency_fallback: bool = False,
 ) -> Artwork:
     """Fetch artwork from the specified source.
 
@@ -426,6 +427,15 @@ def fetch_artwork(
                   served the *previous* day's image with nothing to say it was
                   stale. Two independent collections is a much cheaper way to
                   keep the day's slot filled than a retry of the whole run.
+        emergency_fallback: When True, try Unsplash after both CC0 collections
+                  have failed (and only then — this never shortens the CC0
+                  chain). Off by default: Unsplash's licence is not CC0 and it
+                  needs a key that may not be configured, so reaching for it is
+                  a deliberate choice, not automatic. It exists for the case
+                  the CC0 chain alone does not cover — both museums down at
+                  once, e.g. the Met's search API returning 410 and the AIC
+                  IIIF host returning 403 simultaneously since 2026-10-02 —
+                  where the alternative is publishing nothing for the day.
     """
     fetcher = _FETCHERS.get(source)
     if not fetcher:
@@ -434,6 +444,8 @@ def fetch_artwork(
     chain = [source]
     if fallback:
         chain += [s for s in CC0_SOURCES if s != source]
+    if emergency_fallback and "unsplash" not in chain:
+        chain.append("unsplash")
 
     errors: list[str] = []
     for name in chain:
