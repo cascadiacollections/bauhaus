@@ -46,7 +46,7 @@ jobs:
   # RUNNER_STATUS_TOKEN is a fine-grained PAT scoped to this repo with only
   # that permission. Without it, every run stays GitHub-hosted.
   route:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
       runs-on: ${{ steps.pick.outputs.runs-on }}
