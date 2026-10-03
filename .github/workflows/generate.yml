@@ -106,11 +106,11 @@ jobs:
           MAX_SIZE: '1536'
           GENERATE_VARIANTS: 'true'
           # Scheduled runs only — same reasoning as SKIP_IF_PUBLISHED above.
-          # The Met search API (410 Gone) and the AIC IIIF image host (403,
-          # Cloudflare challenge) have both been down since 2026-10-02; with
-          # neither CC0 source reachable, the run would otherwise fail every
-          # day until one of them recovers. A manual dispatch is unaffected:
-          # it names its own source and never reaches this fallback.
+          # A last resort for days both CC0 sources fail at once (as on
+          # 2026-10-02, when the Met retired v1/search and AIC began
+          # challenging URL-bearing User-Agents), so the date still gets an
+          # artwork. A manual dispatch is unaffected: it names its own source
+          # and never reaches this fallback.
           ALLOW_UNSPLASH_FALLBACK: ${{ github.event_name == 'schedule' && 'true' || '' }}
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

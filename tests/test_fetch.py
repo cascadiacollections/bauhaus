@@ -292,6 +292,42 @@ class TestRetryBackoff:
         assert sleep.call_count == 0
 
 
+class TestMetSearch:
+    """The Met retired v1/search on 2026-10-01; v1.1 is paginated."""
+
+    def test_uses_paginated_v1_1_search_at_random_offset(self):
+        search = MagicMock()
+        search.json.return_value = {"total": 900, "objectIDs": [42]}
+        with patch("fetch._get", side_effect=[search, search, requests.RequestException("stop")]) as get, \
+             patch("fetch.random.randrange", return_value=617), \
+             patch("fetch.MAX_ATTEMPTS", 1), \
+             pytest.raises(RuntimeError):
+            fetch.fetch_met()
+        count_call, page_call, object_call = get.call_args_list
+        assert count_call.args[0].endswith("/public/collection/v1.1/search")
+        assert count_call.kwargs["params"]["limit"] == 1
+        assert page_call.kwargs["params"]["offset"] == 617
+        assert object_call.args[0].endswith("/v1/objects/42")
+
+
+class TestArticRequests:
+    def test_iiif_request_avoids_url_in_user_agent_and_caps_width(self):
+        listing = MagicMock()
+        listing.json.return_value = {"data": [{
+            "id": 1, "title": "River Landscape", "image_id": "abc",
+            "artwork_type_title": "Painting",
+        }]}
+        with patch("fetch._get", side_effect=[listing, requests.RequestException("stop")]) as get, \
+             patch("fetch.MAX_ATTEMPTS", 1), \
+             pytest.raises(RuntimeError):
+            fetch.fetch_artic()
+        iiif_call = get.call_args_list[1]
+        assert iiif_call.args[0].endswith("/abc/full/843,/0/default.jpg")
+        headers = iiif_call.kwargs["headers"]
+        assert "http" not in headers["User-Agent"]
+        assert "github.com" in headers["AIC-User-Agent"]
+
+
 class TestBudgets:
     """Network failures and content rejections draw on separate budgets.
 
@@ -306,6 +342,7 @@ class TestBudgets:
         """A Met search hit whose title the subject filter always rejects."""
         resp = MagicMock()
         resp.json.side_effect = lambda: {
+            "total": 1,
             "objectIDs": [1],
             "title": "Portrait of a Lady",
             "primaryImage": "https://example.invalid/x.jpg",
@@ -322,8 +359,9 @@ class TestBudgets:
              pytest.raises(RuntimeError, match="candidate artworks were rejected"):
             fetch.fetch_met()
         assert sleep.call_count == 0
-        # Two calls per candidate: the search, then the object lookup.
-        assert get.call_count == fetch.MAX_CANDIDATES * 2
+        # Three calls per candidate: the search total, the search at a random
+        # offset, then the object lookup.
+        assert get.call_count == fetch.MAX_CANDIDATES * 3
 
     def test_network_exhaustion_still_reports_attempts(self):
         """An outage stops at MAX_ATTEMPTS rather than burning every candidate."""
