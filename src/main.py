@@ -447,6 +447,10 @@ def main():
 
     style_mode = os.environ.get("STYLE_MODE", "curated")
     landscapes_only = not args.any_subject and os.environ.get("LANDSCAPES_ONLY", "true").lower() != "false"
+    # Off by default — see fetch_artwork's emergency_fallback docstring. The
+    # scheduled workflow turns this on so a day where both CC0 museums are
+    # down does not come up empty.
+    emergency_fallback = os.environ.get("ALLOW_UNSPLASH_FALLBACK", "false").lower() == "true"
 
     args.max_size, args.variants = resolve_runtime_profile(
         args.max_size,
@@ -473,7 +477,12 @@ def main():
     quality_gate = not args.skip_quality_check
     t = time.perf_counter()
     print(f"Fetching artwork from {args.source} (landscapes_only={landscapes_only})...")
-    artwork = fetch_artwork(args.source, landscapes_only=landscapes_only, quality_gate=quality_gate)
+    artwork = fetch_artwork(
+        args.source,
+        landscapes_only=landscapes_only,
+        quality_gate=quality_gate,
+        emergency_fallback=emergency_fallback,
+    )
     record_timing("fetch_artwork", t)
     print(f"  Title: {artwork.title}")
     print(f"  Artist: {artwork.artist}")

@@ -14,7 +14,7 @@ Daily stylized art from public domain museum collections.
 
 Fetches CC0 landscapes from the [Metropolitan Museum of Art](https://www.metmuseum.org/art/collection/search) and [Art Institute of Chicago](https://www.artic.edu/collection) — or landscape photos from [Unsplash](https://unsplash.com) — applies [AdaIN](https://arxiv.org/abs/1703.06868) neural style transfer with curated style references, and serves the results via a free Cloudflare Worker API.
 
-Scheduled runs use the CC0 museum sources, so everything published to the API is CC0 and no API key sits on the critical path. Unsplash remains available for manual runs (`--source unsplash`, or the `source` input on the Generate workflow); its licence is permissive but not CC0.
+Scheduled runs prefer the CC0 museum sources, so output is normally CC0 and no API key sits on the critical path. If both museums are unavailable, the scheduled emergency fallback may publish an Unsplash image instead; this requires `UNSPLASH_ACCESS_KEY`. Unsplash remains available for manual runs (`--source unsplash`, or the `source` input on the Generate workflow); its licence is permissive but not CC0. Check each image's `metadata.json` for its licence.
 
 ## Set as your wallpaper
 
@@ -317,7 +317,7 @@ just worker-check     # typecheck
 | `R2_SECRET_ACCESS_KEY` | R2 secret key |
 | `R2_BUCKET` | Bucket name (default: `bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
-| `UNSPLASH_ACCESS_KEY` | Unsplash API access key. Only needed for `--source unsplash`; the CC0 museum sources require no credentials. |
+| `UNSPLASH_ACCESS_KEY` | Unsplash API access key. Needed for `--source unsplash` and for the scheduled emergency fallback when both CC0 museum sources fail; the CC0 museum sources require no credentials. |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
 | `MEMORY_PROFILE` | `balanced` (default) or `low-memory`. `low-memory` caps `MAX_SIZE` at 1024 and disables variant generation by default to fit constrained CPU/RAM runners. |
 | `GENERATE_VARIANTS` | Generate AVIF and WebP variants alongside JPEG (default: `true`, or `false` in `low-memory`) |
@@ -441,4 +441,4 @@ Monet, Hokusai, Cezanne, Turner, Hiroshige, Seurat, Degas, Klimt, Van Gogh, Gaug
 | AdaIN model | MIT ([naoto0804/pytorch-AdaIN](https://github.com/naoto0804/pytorch-AdaIN)) |
 | NIMA scoring model | MIT ([titu1994/neural-image-assessment](https://github.com/titu1994/neural-image-assessment)) |
 | VGG-19 encoder | BSD-like (torchvision) |
-| **Output images** | **CC0-1.0** for scheduled runs, which use the museum sources. Runs explicitly pointed at Unsplash carry the Unsplash License instead — each image's `metadata.json` records which. |
+| **Output images** | **CC0-1.0** for scheduled runs when a museum source succeeds. If both museums fail, the scheduled emergency fallback publishes an image under the Unsplash License instead; runs explicitly pointed at Unsplash carry that license too. Check each image's `metadata.json` to verify which license applies. |
