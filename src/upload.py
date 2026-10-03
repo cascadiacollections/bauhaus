@@ -35,8 +35,8 @@ def utc_today() -> date:
     """Today's date in UTC.
 
     The publish date must never depend on the runner's local timezone. Hosted
-    runners are UTC, but generate-self-hosted.yml runs this same code on a
-    Pacific-time Mac Mini: a PT-evening dispatch (including 8 PM PT, the time
+    runners are UTC, but generate.yml can route to a self-hosted runner whose
+    local clock is Pacific time: a PT-evening run (including 8 PM PT, the time
     the README advertises) would compute *yesterday's* date there, overwrite
     the previous day's keys, and rewind latest.json.
     """
