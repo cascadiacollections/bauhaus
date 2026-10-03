@@ -143,6 +143,13 @@ def is_landscape(title: str) -> bool:
 
 USER_AGENT = "Bauhaus/0.1 (https://github.com/cascadiacollections/bauhaus; CC0 art service)"
 
+# AIC sits behind a Cloudflare bot challenge that 403s any User-Agent containing
+# a URL. Their API docs ask for contact details in AIC-User-Agent instead.
+AIC_HEADERS = {
+    "User-Agent": "Bauhaus/0.1 (CC0 art service)",
+    "AIC-User-Agent": USER_AGENT,
+}
+
 _session = requests.Session()
 _session.headers.update({"User-Agent": USER_AGENT})
 
@@ -201,18 +208,28 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
                                        "forest", "village", "sky", "winter"])
             else:
                 query = "*"
+            # v1/search was retired 2026-10-01 (410 Gone). v1.1 is paginated
+            # (offset/limit, max 500 per page) and reports the full match count
+            # in `total`, so sample uniformly by fetching one ID at a random offset.
+            search_url = "https://collectionapi.metmuseum.org/public/collection/v1.1/search"
+            params = {"departmentId": dept_id, "hasImages": "true",
+                      "isPublicDomain": "true", "q": query}
+            total = _get(search_url, params={**params, "limit": 1}, timeout=15).json().get("total") or 0
+            if not total:
+                print(f"No Met results for department {dept_id} / '{query}'", file=sys.stderr)
+                continue
+
             search = _get(
-                f"https://collectionapi.metmuseum.org/public/collection/v1/search"
-                f"?departmentId={dept_id}&hasImages=true&isPublicDomain=true&q={query}",
+                search_url,
+                params={**params, "offset": random.randrange(total), "limit": 1},
                 timeout=15,
             ).json()
-
             obj_ids = search.get("objectIDs") or []
             if not obj_ids:
                 print(f"No Met results for department {dept_id} / '{query}'", file=sys.stderr)
                 continue
 
-            obj_id = random.choice(obj_ids)
+            obj_id = obj_ids[0]
             obj = _get(
                 f"https://collectionapi.metmuseum.org/public/collection/v1/objects/{obj_id}",
                 timeout=15,
@@ -271,6 +288,7 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
                 f"?fields=id,title,artist_title,date_display,image_id,artwork_type_title"
                 f"&is_public_domain=true&limit=1&page={page}",
                 timeout=15,
+                headers=AIC_HEADERS,
             ).json()
 
             data = resp.get("data", [])
@@ -297,9 +315,11 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
                 continue
 
             image_id = item["image_id"]
-            # Request max 3000px wide — AIC IIIF caps at source resolution
-            iiif_url = f"https://www.artic.edu/iiif/2/{image_id}/full/3000,/0/default.jpg"
-            img_resp = _get(iiif_url, timeout=60)
+            # AIC's IIIF server only serves public-domain images up to 843px wide.
+            # Larger sizes 307-redirect to 843 for some clients and 403 outright
+            # for others (GitHub-hosted runners), so request 843 directly.
+            iiif_url = f"https://www.artic.edu/iiif/2/{image_id}/full/843,/0/default.jpg"
+            img_resp = _get(iiif_url, timeout=60, headers=AIC_HEADERS)
 
             if quality_gate:
                 passed, reason = _check_quality(
