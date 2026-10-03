@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # Fedora workstation runner used by generate-self-hosted.yml.
+  labels:
+    - bauhaus-fedora
