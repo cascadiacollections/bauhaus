@@ -1,4 +1,4 @@
 self-hosted-runner:
-  # Fedora workstation runner used by generate-self-hosted.yml.
+  # Fedora workstation runner; generate.yml routes to it when idle.
   labels:
     - bauhaus-fedora
