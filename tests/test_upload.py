@@ -529,3 +529,25 @@ class TestUtcToday:
         with patch("upload.utc_today", return_value=date(2026, 3, 4)):
             prepared = prepare_metadata_for_upload({"title": "T"})
         assert prepared["date"] == "2026-03-04"
+
+    def test_prepare_metadata_sets_published_date(self):
+        with patch("upload.utc_today", return_value=date(2026, 3, 4)):
+            prepared = prepare_metadata_for_upload({"title": "T"})
+        assert prepared["published_date"] == "2026-03-04"
+
+    def test_published_date_is_independent_of_the_artwork_date(self):
+        """A source's object date ("ca. 1750") stays in "date"; published_date is the day."""
+        prepared = prepare_metadata_for_upload(
+            {"title": "T", "date": "ca. 1750"}, today=date(2026, 10, 4)
+        )
+        assert prepared["date"] == "ca. 1750"
+        assert prepared["published_date"] == "2026-10-04"
+
+    def test_prepare_metadata_is_idempotent(self):
+        """upload() re-prepares metadata that was already prepared (and signed)."""
+        once = prepare_metadata_for_upload(
+            {"title": "T", "date": "ca. 1750"},
+            today=date(2026, 10, 4),
+            generated_at=datetime(2026, 10, 4, tzinfo=UTC),
+        )
+        assert prepare_metadata_for_upload(once, today=date(2026, 10, 4)) == once

@@ -63,6 +63,10 @@ def prepare_metadata_for_upload(
     today = today or utc_today()
     prepared = dict(metadata)
     prepared.setdefault("date", today.isoformat())
+    # "date" is the artwork's own date when the source has one (a Met object date such
+    # as "ca. 1750"), so clients can't use it to tell which day this was published.
+    # published_date is always the UTC publish day, the same key the archive uses.
+    prepared["published_date"] = today.isoformat()
     prepared.setdefault("generated_at", (generated_at or datetime.now(UTC)).isoformat())
     return prepared
 
