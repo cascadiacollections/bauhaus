@@ -13,6 +13,9 @@
  *   POST     /api/vitals              → ingest Web Vitals RUM (Analytics Engine)
  *   POST     /api/err                 → ingest JS error RUM (Analytics Engine)
  *
+ * Cron (scheduled): commits recent metadata and manifests to the
+ * HISTORY_REPO Artifacts repo — see src/history.ts.
+ *
  * Format negotiation:
  *   ?format=auto|jpeg|avif|webp overrides Accept-header negotiation.
  *   Worker inspects Accept header to pick the best pre-generated variant
@@ -22,6 +25,8 @@
  *   ?progressive=true    → serve progressive JPEG variant (falls back to baseline)
  *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
  */
+
+import { recordHistory, type HistoryEnv } from "./history";
 
 interface Env {
   BUCKET: R2Bucket;
@@ -730,6 +735,20 @@ export default {
       console.error("Unhandled error", err);
       return unavailable("Upstream storage unavailable");
     }
+  },
+
+  async scheduled(controller: ScheduledController, env: Env & HistoryEnv, ctx: ExecutionContext): Promise<void> {
+    // A rejection here marks the invocation failed in the dashboard and
+    // `wrangler tail`; the next run retries the same window.
+    ctx.waitUntil(
+      recordHistory(env, new Date(controller.scheduledTime)).then((r) => {
+        console.log(
+          r.commit
+            ? `history: committed ${r.commit} (${r.dates.join(", ")})`
+            : "history: nothing new to record",
+        );
+      }),
+    );
   },
 };
 
