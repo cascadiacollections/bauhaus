@@ -24,5 +24,16 @@ dataset = "web_vitals"
 binding = "WEB_ERRORS"
 dataset = "web_errors"
 
+# Git history of each day's metadata and manifest (src/history.ts). Runs after
+# generate.yml's 04:00 UTC publish and its 10:00 UTC retry. Artifacts has no
+# local simulation; `wrangler dev` needs `remote = true` here to exercise it.
+[[artifacts]]
+binding = "HISTORY"
+namespace = "default"
+
+[triggers]
+crons = ["30 11 * * *"]
+
 [vars]
 ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"
+HISTORY_REPO = "bauhaus-history"

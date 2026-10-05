@@ -66,6 +66,7 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT; retried at 10 AM UTC)
     GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
     GET /api/today.json -> metadata
     GET /api/:date      -> archive
+    cron 11:30 UTC      -> commit new metadata + manifests to a Git history
 ```
 
 Runs daily via GitHub Actions. Total cost: **$0/month**.
@@ -74,6 +75,7 @@ Runs daily via GitHub Actions. Total cost: **$0/month**.
 |-----------|-------------|
 | Cloudflare R2 (10 GB free) | $0 |
 | Cloudflare Workers (100k req/day free) | $0 |
+| Cloudflare Artifacts (10k ops + 1 GB/month included with Workers Paid) | $0 — about 8 ops a day, ~2 KB a day |
 | GitHub Actions (public repo) | $0 |
 
 ## API
@@ -135,6 +137,17 @@ constructed by hand. `next` is absent on the last page. An invalid `limit` or
 `before` is a `400` rather than a silently corrected page. A `truncated: true`
 field, which should not occur for decades, means the listing hit its internal
 round-trip cap and `total` counts only what was walked.
+
+### Git history
+
+A daily cron in the Worker commits each newly published day's
+`metadata.json`, `manifest.json` and (when signing is on) `metadata.json.sig`
+to the `bauhaus-history` repo in Cloudflare Artifacts, under `YYYY/MM/DD/`.
+Images stay in R2. Clone it with any Git client and a repo token, then
+`git log -p` shows exactly what was published and when. Each commit message
+names the newest date it records, so a run only reads one log entry plus the
+days after it, and a missed day is caught up by the next run (up to
+`HISTORY_DAYS`, default 7, back). See `worker/src/history.ts`.
 
 Fetch each date's metadata or image with the regular endpoints:
 
