@@ -262,6 +262,24 @@ Requires [mise](https://mise.jdx.dev) (or manually install [uv](https://github.c
 
 For a ready-to-use dev environment, open this repo in VS Code and choose "Reopen in Container" — the included `.devcontainer/` setup provisions Node, Python 3.14, uv, and just.
 
+### Python 3.15 compatibility
+
+Python 3.14 remains the supported generation runtime. CI probes Python 3.15 on
+Linux and macOS ARM64 using the checked-in lockfile, published wheels only,
+import checks, and the full generation test suite. These experimental jobs are
+non-blocking: a green overall CI run does not establish Python 3.15 support.
+Each job's summary reports installation, import, and test outcomes; missing
+PyTorch/torchvision wheels remain visible as installation failures.
+
+Before promoting 3.15, require both compatibility jobs to pass and compare a
+full dry-run generation against 3.14 on the deployment platforms, including
+output quality, total runtime, style-transfer runtime, and peak memory. Update
+the Docker, mise, generation workflow, and tool target pins together only after
+that validation. The Cloudflare Python Worker has its own runtime and dependency
+set and is outside this generator compatibility check.
+
+### Development commands
+
 ```bash
 # Install dependencies
 just setup

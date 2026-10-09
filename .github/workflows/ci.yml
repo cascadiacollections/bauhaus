@@ -108,6 +108,75 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  # Track the next interpreter without changing production's 3.14 pins.
+  # Missing PyTorch wheels are an expected failure until upstream supports
+  # 3.15; keep the failure visible, but do not make it a merge requirement.
+  python-315:
+    name: Python 3.15 experimental (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    continue-on-error: true
+    env:
+      UV_PYTHON_DOWNLOADS: never
+      UV_PYTHON_PREFERENCE: only-system
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      # On release day uv's managed builds may still point at an RC. Require
+      # a final release from setup-python instead of silently testing an RC.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.15'
+          allow-prereleases: false
+
+      - name: Verify stable interpreter
+        id: interpreter
+        run: python -c "import sys; print(sys.version); assert sys.version_info[:2] == (3, 15) and sys.version_info.releaselevel == 'final'"
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
+      # Test the checked-in dependency set with published wheels. Compiling
+      # torch from source would conceal the production installation blocker.
+      - name: Install dependencies (published wheels only)
+        id: install
+        run: uv sync --locked --no-build --python 3.15
+
+      - name: Check imports
+        id: imports
+        run: uv run --no-sync --python 3.15 python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
+        working-directory: src
+
+      - name: Run tests
+        id: tests
+        run: uv run --no-sync --python 3.15 pytest -v
+
+      - name: Report compatibility
+        if: always()
+        env:
+          INTERPRETER_OUTCOME: ${{ steps.interpreter.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          IMPORTS_OUTCOME: ${{ steps.imports.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+        run: |
+          {
+            echo '## Python 3.15 compatibility (experimental)'
+            echo "Stable interpreter: $INTERPRETER_OUTCOME"
+            echo "Published-wheel install: $INSTALL_OUTCOME"
+            echo "Imports: $IMPORTS_OUTCOME"
+            echo "Tests: $TESTS_OUTCOME"
+            if [ "$INSTALL_OUTCOME" = success ] && [ "$IMPORTS_OUTCOME" = success ] && [ "$TESTS_OUTCOME" = success ]; then
+              echo 'Compatibility checks passed. Full generation and performance validation are still required before promotion.'
+            else
+              echo 'Python 3.15 is not validated. See the failing step logs; production remains on Python 3.14.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Lint + audit (Python)
     runs-on: ubuntu-latest
