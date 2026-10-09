@@ -268,8 +268,10 @@ Python 3.14 remains the supported generation runtime. CI probes Python 3.15 on
 Linux and macOS ARM64 using the checked-in lockfile, published wheels only,
 import checks, and the full generation test suite. These experimental jobs are
 non-blocking: a green overall CI run does not establish Python 3.15 support.
-Each job's summary reports installation, import, and test outcomes; missing
-PyTorch/torchvision wheels remain visible as installation failures.
+Each job's summary reports interpreter/tool availability, installation, import,
+and test outcomes. Failed probes produce a warning and retain their failure logs;
+missing PyTorch/torchvision wheels are reported as installation failures. A green
+compatibility-report job means the report completed, not that its probes passed.
 
 Before promoting 3.15, require both compatibility jobs to pass and compare a
 full dry-run generation against 3.14 on the deployment platforms, including

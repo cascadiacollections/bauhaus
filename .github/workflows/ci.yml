@@ -109,13 +109,12 @@ jobs:
         run: uv run pytest -v
 
   # Track the next interpreter without changing production's 3.14 pins.
-  # Missing PyTorch wheels are an expected failure until upstream supports
-  # 3.15; keep the failure visible, but do not make it a merge requirement.
+  # Missing interpreters/wheels are readiness findings, not CI regressions.
+  # Report them explicitly without making them merge requirements.
   python-315:
-    name: Python 3.15 experimental (${{ matrix.os }})
+    name: Python 3.15 compatibility report (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
-    continue-on-error: true
     env:
       UV_PYTHON_DOWNLOADS: never
       UV_PYTHON_PREFERENCE: only-system
@@ -129,15 +128,22 @@ jobs:
       # On release day uv's managed builds may still point at an RC. Require
       # a final release from setup-python instead of silently testing an RC.
       - uses: actions/setup-python@v7
+        id: setup-python
+        continue-on-error: true
         with:
           python-version: '3.15'
           allow-prereleases: false
 
       - name: Verify stable interpreter
         id: interpreter
+        if: steps.setup-python.outcome == 'success'
+        continue-on-error: true
         run: python -c "import sys; print(sys.version); assert sys.version_info[:2] == (3, 15) and sys.version_info.releaselevel == 'final'"
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        id: setup-uv
+        if: steps.interpreter.outcome == 'success'
+        continue-on-error: true
         with:
           enable-cache: true
 
@@ -145,20 +151,28 @@ jobs:
       # torch from source would conceal the production installation blocker.
       - name: Install dependencies (published wheels only)
         id: install
+        if: steps.setup-uv.outcome == 'success'
+        continue-on-error: true
         run: uv sync --locked --no-build --python 3.15
 
       - name: Check imports
         id: imports
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
         run: uv run --no-sync --python 3.15 python -c "from fetch import fetch_artwork; from stylize import StyleTransfer; from upload import upload; from postprocess import postprocess; print('OK')"
         working-directory: src
 
       - name: Run tests
         id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
         run: uv run --no-sync --python 3.15 pytest -v
 
       - name: Report compatibility
         if: always()
         env:
+          SETUP_PYTHON_OUTCOME: ${{ steps.setup-python.outcome }}
+          SETUP_UV_OUTCOME: ${{ steps.setup-uv.outcome }}
           INTERPRETER_OUTCOME: ${{ steps.interpreter.outcome }}
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           IMPORTS_OUTCOME: ${{ steps.imports.outcome }}
@@ -166,7 +180,9 @@ jobs:
         run: |
           {
             echo '## Python 3.15 compatibility (experimental)'
+            echo "Interpreter provision: $SETUP_PYTHON_OUTCOME"
             echo "Stable interpreter: $INTERPRETER_OUTCOME"
+            echo "uv setup: $SETUP_UV_OUTCOME"
             echo "Published-wheel install: $INSTALL_OUTCOME"
             echo "Imports: $IMPORTS_OUTCOME"
             echo "Tests: $TESTS_OUTCOME"
@@ -176,6 +192,9 @@ jobs:
               echo 'Python 3.15 is not validated. See the failing step logs; production remains on Python 3.14.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$INSTALL_OUTCOME" != success ] || [ "$IMPORTS_OUTCOME" != success ] || [ "$TESTS_OUTCOME" != success ]; then
+            echo '::warning::Python 3.15 is not validated. This job reports readiness; it does not certify compatibility. See the job summary and failing probe logs.'
+          fi
 
   lint:
     name: Lint + audit (Python)
