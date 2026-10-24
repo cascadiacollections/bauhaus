@@ -19,7 +19,10 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=9.1.1"]
+dev = [
+    "pytest>=9.1.1",
+    "ty>=0.0.91",
+]
 
 [tool.uv]
 # torch depends on setuptools with no upper or lower bound, which let the
@@ -29,6 +32,17 @@ constraint-dependencies = ["setuptools>=83.0.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ty.src]
+# worker-py is its own project with its own environment and ty config.
+exclude = ["worker-py"]
+
+[tool.ty.environment]
+extra-paths = ["tests"]
+
+[tool.ty.analysis]
+# Real-ESRGAN is an optional upscaler, imported lazily and not in the lockfile.
+allowed-unresolved-imports = ["basicsr.**", "realesrgan"]
 
 [tool.ruff]
 line-length = 110

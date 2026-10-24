@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,6 +19,7 @@ _SCRIPT = Path(__file__).resolve().parent.parent / "models" / "download_models.p
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("download_models", _SCRIPT)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules["download_models"] = module
     spec.loader.exec_module(module)
@@ -142,7 +144,8 @@ class TestConvertNima:
     def _archive(self, path: Path, source_sha: str) -> None:
         import numpy as np
 
-        np.savez(path, **{dm._SOURCE_SHA_KEY: np.array(source_sha), "dense.bias": np.zeros(10)})
+        arrays: dict[str, Any] = {dm._SOURCE_SHA_KEY: np.array(source_sha), "dense.bias": np.zeros(10)}
+        np.savez(path, **arrays)
 
     def test_conversion_is_skipped_when_the_archive_is_current(self, tmp_path, monkeypatch):
         source = tmp_path / dm.NIMA_SOURCE

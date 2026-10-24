@@ -1,5 +1,6 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -107,7 +108,7 @@ class TestIsLandscape:
 
 class TestArtworkToMetadata:
     def _make_artwork(self, source: str = "met", **kwargs) -> Artwork:
-        defaults = dict(
+        defaults: dict[str, Any] = dict(
             title="Wheat Field with Cypresses",
             artist="Vincent van Gogh",
             date="1889",

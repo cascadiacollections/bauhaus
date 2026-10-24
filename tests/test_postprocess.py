@@ -21,6 +21,7 @@ def _gradient_image(size: tuple[int, int] = (256, 64)) -> Image.Image:
     """Create an image with a horizontal red gradient for histogram testing."""
     img = Image.new("RGB", size)
     pixels = img.load()
+    assert pixels is not None
     w, h = size
     for x in range(w):
         for y in range(h):
@@ -30,7 +31,13 @@ def _gradient_image(size: tuple[int, int] = (256, 64)) -> Image.Image:
 
 def _pixel_values(image: Image.Image) -> list[tuple[int, ...]]:
     """Collect pixel values without relying on deprecated getdata()."""
-    return [image.getpixel((x, y)) for y in range(image.height) for x in range(image.width)]
+    values = []
+    for y in range(image.height):
+        for x in range(image.width):
+            value = image.getpixel((x, y))
+            assert isinstance(value, tuple)
+            values.append(value)
+    return values
 
 
 # --- _build_histogram_lut ---

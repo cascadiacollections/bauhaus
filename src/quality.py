@@ -45,7 +45,7 @@ def sharpness_score(image: Image.Image) -> float:
     w, h = img.size
     scale = min(512 / max(w, h), 1.0)
     if scale < 1.0:
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+        img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
 
     edges = img.filter(ImageFilter.FIND_EDGES)
 

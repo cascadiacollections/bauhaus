@@ -87,6 +87,9 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+      - name: Type check
+        run: uv run ty check --output-format github
+
   # Secondary job: the self-hosted generator is an ARM64 Mac, and
   # stylize._select_device() has an MPS branch nothing else exercises.
   python-macos:

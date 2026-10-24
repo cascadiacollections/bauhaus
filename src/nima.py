@@ -91,7 +91,9 @@ class NimaMobileNet(nn.Module):
         """
         return nn.functional.pad(x, (0, 1, 0, 1) if stride == 2 else (1, 1, 1, 1))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    # nn.Module declares forward as a plain Callable attribute, so ty reads the
+    # standard method override as narrowing what the attribute accepts.
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # ty: ignore[invalid-mutable-override]
         """Return the 10-bin rating distribution (softmax over the AVA scale)."""
         x = nn.functional.relu6(self.conv1_bn(self.conv1(self._pad_same(x, 2))))
 
@@ -137,7 +139,7 @@ def _get_model(weights_path: Path = WEIGHTS_PATH) -> NimaMobileNet:
 
 def preprocess(image: Image.Image) -> torch.Tensor:
     """Resize to 224×224 and scale to [-1, 1], the backbone's training input."""
-    resized = image.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.BILINEAR)
+    resized = image.convert("RGB").resize((INPUT_SIZE, INPUT_SIZE), Image.Resampling.BILINEAR)
     arr = np.asarray(resized, dtype=np.float32) / 127.5 - 1.0
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
 

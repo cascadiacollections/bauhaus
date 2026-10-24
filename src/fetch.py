@@ -5,9 +5,9 @@ import random
 import re
 import sys
 import time
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from io import BytesIO
+from typing import Protocol
 
 import requests
 from PIL import Image
@@ -411,7 +411,11 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
     raise _exhausted("Unsplash", network_failures, candidates)
 
 
-_FETCHERS: dict[str, Callable[[bool, bool], Artwork]] = {
+class _Fetcher(Protocol):
+    def __call__(self, landscapes_only: bool = True, quality_gate: bool = True) -> Artwork: ...
+
+
+_FETCHERS: dict[str, _Fetcher] = {
     "unsplash": fetch_unsplash,
     "met": fetch_met,
     "artic": fetch_artic,
