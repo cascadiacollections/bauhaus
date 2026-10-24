@@ -17,6 +17,7 @@ dev = [
     # arrives transitively via starlette, but the tests import the plugin
     # directly, so it is declared rather than relied on as a side effect.
     "anyio>=4.14",
+    "ty>=0.0.91",
 ]
 
 [tool.pytest.ini_options]
@@ -24,6 +25,14 @@ testpaths = ["tests"]
 # tools/ holds the differential parity runner, which is not part of the Worker
 # bundle but is unit tested alongside it.
 pythonpath = ["src", "tools"]
+
+[tool.ty.environment]
+# Mirrors pytest's pythonpath, so tests resolve the parity runner the same way.
+extra-paths = ["tools"]
+
+[tool.ty.analysis]
+# Pyodide's JavaScript bridge only exists inside the Workers runtime.
+allowed-unresolved-imports = ["js"]
 
 [tool.ruff]
 line-length = 110

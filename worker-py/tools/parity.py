@@ -34,6 +34,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 import httpx
 
@@ -396,7 +397,7 @@ def render(results: Sequence[Mapping[str, object]]) -> tuple[str, int]:
             lines.append(f"ERROR {name} ({result['method']} {result['path']}): {result['error']}")
             continue
 
-        diffs = result.get("diffs") or []
+        diffs = cast("list[str]", result.get("diffs") or [])
         if diffs:
             failures += 1
             retried = " (retried)" if result.get("retried") else ""
