@@ -80,7 +80,7 @@ class TestArchitecture:
         """
         model = NimaMobileNet().eval()
         captured = {}
-        model.conv_pw_13.register_forward_hook(
+        model.get_submodule("conv_pw_13").register_forward_hook(
             lambda _module, _inputs, output: captured.update(shape=output.shape)
         )
 

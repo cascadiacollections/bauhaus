@@ -86,7 +86,9 @@ def _keras_to_torch(h5_path: Path) -> dict:
     as (out, in, kh, kw), depthwise kernels as (kh, kw, in, mult) against
     (in * mult, 1, kh, kw), and dense kernels transposed.
     """
-    import h5py
+    # Supplied by the inline script metadata, not the project environment. ty
+    # checks PEP 723 scripts without the project's allowed-unresolved-imports.
+    import h5py  # ty: ignore[unresolved-import]
     import numpy as np
 
     def _tensor(group: h5py.File, layer: str, weight: str) -> np.ndarray:
