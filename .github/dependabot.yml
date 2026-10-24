@@ -1,17 +1,40 @@
 version: 2
+# One grouped PR per ecosystem per week instead of one PR per package: each
+# PR costs a full CI run, a main run after merge and (for /worker) a deploy,
+# and separate PRs that touch the same lockfile conflict after the first
+# merge. Every ecosystem also waits 7 days before proposing a new release:
+# hijacked releases are usually caught and yanked within days. Security
+# updates are neither grouped nor delayed.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
   # "uv", not "pip": the pip ecosystem edits pyproject.toml but leaves
   # uv.lock untouched, which silently desynchronises the lockfile from the
   # declared constraints. The uv ecosystem updates both together.
+  # worker-py has its own uv project and lock; without it here its
+  # dependencies (certifi, for one) only moved when someone relocked by hand.
   - package-ecosystem: "uv"
-    directory: "/"
+    directories: ["/", "/worker-py"]
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        patterns: ["*"]
   - package-ecosystem: "npm"
     directory: "/worker"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      worker:
+        patterns: ["*"]
