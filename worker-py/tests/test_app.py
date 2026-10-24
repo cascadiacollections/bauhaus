@@ -8,6 +8,7 @@ import pytest
 from conftest import make_client
 from fakes import FakeBucket, FakeEnv, bucket_with_day
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import Request
 
 from bauhaus_api.logic import IMMUTABLE_CACHE, TODAY_CACHE
 
@@ -276,11 +277,12 @@ class TestErrors:
 
         leaked = 'Traceback (most recent call last): File "/secret/path.py"'
         response = await _http_exception_handler(
-            None, StarletteHTTPException(status_code=404, detail=leaked)
+            Request({"type": "http"}), StarletteHTTPException(status_code=404, detail=leaked)
         )
 
-        assert leaked not in response.body.decode()
-        assert json.loads(response.body) == {
+        body = bytes(response.body)
+        assert leaked not in body.decode()
+        assert json.loads(body) == {
             "error": "Not found. Try /api/today, /api/YYYY-MM-DD, or /api/archive"
         }
 

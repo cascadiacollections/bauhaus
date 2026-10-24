@@ -23,9 +23,11 @@ otherwise swallow them.
 
 from __future__ import annotations
 
+import builtins
 import json
 import traceback
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from typing import Protocol
 
 from fastapi import FastAPI, Request, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -78,6 +80,22 @@ class NoLatestError(Exception):
 # ---------------------------------------------------------------------------
 
 
+class _R2Blob(Protocol):
+    async def bytes(self) -> builtins.bytes: ...
+    async def text(self) -> str: ...
+
+
+class _R2Object(Protocol):
+    async def blob(self) -> _R2Blob: ...
+
+
+class _R2Bucket(Protocol):
+    """The slice of the R2 bucket binding this module reads through."""
+
+    async def get(self, key: str) -> _R2Object | None: ...
+    async def head(self, key: str) -> object | None: ...
+
+
 def _to_js(obj: object) -> object:
     """Convert a Python dict to a plain JavaScript object.
 
@@ -111,7 +129,7 @@ def _cache_control(obj: object) -> str | None:
     return getattr(metadata, "cacheControl", None)
 
 
-async def _body_bytes(obj: object) -> bytes:
+async def _body_bytes(obj: _R2Object) -> bytes:
     """Read an R2 object body into memory.
 
     Unlike the TypeScript worker — which hands R2's ReadableStream straight to
@@ -119,12 +137,12 @@ async def _body_bytes(obj: object) -> bytes:
     the body. Published images are a few hundred KB, well inside the Worker
     memory limit, but this is the one real efficiency regression of the port.
     """
-    blob = await obj.blob()  # type: ignore[attr-defined]
+    blob = await obj.blob()
     return await blob.bytes()
 
 
-async def _get_today(bucket: object) -> str:
-    obj = await bucket.get("latest.json")  # type: ignore[attr-defined]
+async def _get_today(bucket: _R2Bucket) -> str:
+    obj = await bucket.get("latest.json")
     if obj is None:
         raise NoLatestError("No latest.json found")
     blob = await obj.blob()
@@ -257,10 +275,10 @@ def _negotiate(request: Request) -> ImageFormat:
 # ---------------------------------------------------------------------------
 
 
-async def _first_present(
-    fetch: Callable[[str], Awaitable[object | None]],
+async def _first_present[T](
+    fetch: Callable[[str], Awaitable[T | None]],
     candidates: Sequence[tuple[str, str]],
-) -> tuple[object, str, str] | None:
+) -> tuple[T, str, str] | None:
     """The first candidate key that exists, as ``(object, key, content_type)``."""
     for key, content_type in candidates:
         obj = await fetch(key)
@@ -271,7 +289,7 @@ async def _first_present(
 
 async def _serve_image(
     request: Request,
-    bucket: object,
+    bucket: _R2Bucket,
     base_path: str,
     today: bool,
     not_found_msg: str,
@@ -292,7 +310,7 @@ async def _serve_image(
     is_head = request.method == "HEAD"
 
     if is_head or if_none_match:
-        found = await _first_present(bucket.head, candidates)  # type: ignore[attr-defined]
+        found = await _first_present(bucket.head, candidates)
         if found is None:
             return _not_found(not_found_msg)
         head, key, content_type = found
@@ -305,12 +323,12 @@ async def _serve_image(
             return Response(status_code=200, headers=headers)
 
         # ETag did not match — read the full object using the resolved key.
-        obj = await bucket.get(key)  # type: ignore[attr-defined]
+        obj = await bucket.get(key)
         if obj is None:
             return _not_found(not_found_msg)
         return Response(content=await _body_bytes(obj), headers=headers)
 
-    found = await _first_present(bucket.get, candidates)  # type: ignore[attr-defined]
+    found = await _first_present(bucket.get, candidates)
     if found is None:
         return _not_found(not_found_msg)
     obj, key, content_type = found
@@ -322,7 +340,7 @@ async def _serve_image(
 
 async def _serve_object(
     request: Request,
-    bucket: object,
+    bucket: _R2Bucket,
     key: str,
     headers_for: Callable[[object], dict[str, str]],
     today: bool,
@@ -333,7 +351,7 @@ async def _serve_object(
     is_head = request.method == "HEAD"
 
     if is_head or if_none_match:
-        head = await bucket.head(key)  # type: ignore[attr-defined]
+        head = await bucket.head(key)
         if head is None:
             return _not_found(not_found_msg)
         if if_none_match and etag_matches(if_none_match, _etag(head)):
@@ -341,14 +359,14 @@ async def _serve_object(
         if is_head:
             return Response(status_code=200, headers=headers_for(head))
 
-    obj = await bucket.get(key)  # type: ignore[attr-defined]
+    obj = await bucket.get(key)
     if obj is None:
         return _not_found(not_found_msg)
     return Response(content=await _body_bytes(obj), headers=headers_for(obj))
 
 
 async def _serve_json(
-    request: Request, bucket: object, key: str, today: bool, not_found_msg: str
+    request: Request, bucket: _R2Bucket, key: str, today: bool, not_found_msg: str
 ) -> Response:
     _check_format(request)
     return await _serve_object(

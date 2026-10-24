@@ -302,6 +302,10 @@ jobs:
         working-directory: worker-py
         run: uv run pytest -v
 
+      - name: Type check
+        working-directory: worker-py
+        run: uv run ty check --output-format github
+
       # Matches the root lint job: pip-audit with no target audits its own
       # environment and reports a confident all-clear, so it is pointed at this
       # project's resolved dependency set.

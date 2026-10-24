@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Any, Literal
 
 ImageFormat = Literal["avif", "webp", "jpeg"]
 
@@ -278,9 +278,9 @@ def split_url(raw: object) -> tuple[str, str]:
     return parsed.hostname or "", parsed.path or ""
 
 
-def _as_float(value: object) -> float:
+def _as_float(value: Any) -> float:
     try:
-        return float(value)  # type: ignore[arg-type]
+        return float(value)
     except (TypeError, ValueError):
         return 0.0
 

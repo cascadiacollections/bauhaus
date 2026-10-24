@@ -8,6 +8,7 @@ conditional-request behaviour be tested with an ordinary pytest run.
 
 from __future__ import annotations
 
+import builtins
 import json
 from dataclasses import dataclass, field
 
@@ -18,10 +19,10 @@ class FakeHttpMetadata:
 
 
 class FakeBlob:
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: builtins.bytes) -> None:
         self._data = data
 
-    async def bytes(self) -> bytes:
+    async def bytes(self) -> builtins.bytes:
         return self._data
 
     async def text(self) -> str:
