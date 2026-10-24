@@ -26,14 +26,15 @@ wheels = [
 
 [[package]]
 name = "anyio"
-version = "4.14.2"
+version = "4.15.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
+    { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/cc/a381afa6efea9f496eff839d4a6a1aed3bfafc7b3ab4b0d1b243a12573dd/anyio-4.14.2.tar.gz", hash = "sha256:cfa139f3ed1a23ee8f88a145ddb5ac7605b8bbfd8592baacd7ce3d8bb4313c7f", size = 260176, upload-time = "2026-07-12T20:29:07.082Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl", hash = "sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494", size = 125813, upload-time = "2026-07-12T20:29:05.763Z" },
+    { url = "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl", hash = "sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101", size = 132079, upload-time = "2026-09-05T10:42:37.923Z" },
 ]
 
 [[package]]
@@ -94,18 +95,19 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.141.1"
+version = "0.143.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
+    { name = "opentelemetry-api" },
     { name = "pydantic" },
     { name = "starlette" },
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/d5/b0aeb0b303650ac87b0411de4aaf3f901b06042dcc3fb00f30b97b7ff585/fastapi-0.143.3.tar.gz", hash = "sha256:b9ab567ee57afb4454004ce04c889f8f0160ac47946b99795887cd6e88484848", size = 469834, upload-time = "2026-10-16T14:14:13.31Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/1a/03d246befcf307219bb2161c97d8c5d314f84125bf7dd245730a28589828/fastapi-0.143.3-py3-none-any.whl", hash = "sha256:75e8bd68e2f52f77d29b2879749c257d64de2d85282d25270caf2bfccce5efe5", size = 144849, upload-time = "2026-10-16T14:14:11.763Z" },
 ]
 
 [[package]]
@@ -182,6 +184,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec958cb99bd3efefba235e65cdeb9c84d24a8293ba1d90/mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba", size = 8729, upload-time = "2022-08-14T12:40:10.846Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
+]
+
+[[package]]
+name = "opentelemetry-api"
+version = "1.45.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2e/02/6e0ae9cc61bd3169d401077b507b3ebc344745171e1051ab430be012dcd9/opentelemetry_api-1.45.1.tar.gz", hash = "sha256:aa38ed19bcc084ba42782a73255b3582283eced7ad6dddbd6695189e69adfb75", size = 72804, upload-time = "2026-10-06T17:32:58.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1e/41/f7dcf80b81ee8e71c1a2b59f14208bc723edbd89ed027a73b175abf6348e/opentelemetry_api-1.45.1-py3-none-any.whl", hash = "sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb", size = 60256, upload-time = "2026-10-06T17:32:33.506Z" },
 ]
 
 [[package]]
@@ -471,7 +485,7 @@ wheels = [
 
 [[package]]
 name = "workers-py"
-version = "1.17.0"
+version = "1.17.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -482,16 +496,16 @@ dependencies = [
     { name = "rich" },
     { name = "workers-runtime-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/fd/2e1e798cd4e5e0da13111ee9ffe657b827446920781bb4657ba3c68522b3/workers_py-1.17.0.tar.gz", hash = "sha256:54299bdfaba5eafb570d876f9f0a1ada6ed0207171ab0ee91c54f13c87bf6764", size = 70991, upload-time = "2026-08-28T18:26:38.537Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/7d/63d64f2bef8a5e4de8db4ac94567b86237d5bc928a2b21adb51766095af0/workers_py-1.17.8.tar.gz", hash = "sha256:9440f6ffb82f7d78682aae81485a585cc4507a1d430f1171ca7ecb59e81a7858", size = 74693, upload-time = "2026-10-16T02:42:34.619Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f8/17/8b10355808998c88d77c5c605f3b0b061934fb9683d07e43ecdefb7382b1/workers_py-1.17.0-py3-none-any.whl", hash = "sha256:8067aceddba01c2ba09a477d25bd252b9286f0b025fd99b67172e40ba46cc242", size = 17155, upload-time = "2026-08-28T18:26:37.325Z" },
+    { url = "https://files.pythonhosted.org/packages/86/49/764bf78166fc71e9f9127a0da9e7fa8d1cc9b69bfb0ce00b83f37f0e2f49/workers_py-1.17.8-py3-none-any.whl", hash = "sha256:083d72297ee560e23264ba237590399764f2d06c792de1f91eb3fd8cc58b31e7", size = 19561, upload-time = "2026-10-16T02:42:33.301Z" },
 ]
 
 [[package]]
 name = "workers-runtime-sdk"
-version = "1.8.1"
+version = "1.9.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/88/db/482ffd6dc4b175e562fb502a236bcb412cfef82f81e2e7765e3ab173eb93/workers_runtime_sdk-1.8.1.tar.gz", hash = "sha256:fe33a19380b33a3d077b5cd993e4730852c90c2e24d4a48e1b889e47f339a509", size = 134489, upload-time = "2026-08-28T18:51:51.281Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/4c/100d6abd6a6485a0c6215e1f00f0b21d09186889dd34063987cc410bde9c/workers_runtime_sdk-1.9.4.tar.gz", hash = "sha256:8d8aa5861eaf773882a36e13ab2fdd4bbab272aaf22a0254f6c459b7e55d6e4b", size = 143754, upload-time = "2026-10-16T05:13:20.851Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d3/96/fd6f11ee20884375e125242e4710b8e7934a5e6c01bce7ee3818204da426/workers_runtime_sdk-1.8.1-py3-none-any.whl", hash = "sha256:737eabffd3753d96fd88e00fee8b4f7004492c1d7b3657ad54b59d15382450e0", size = 35568, upload-time = "2026-08-28T18:51:49.989Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/0d/e042cc8ac587699e7479db34dee27bd653297d709386b22e926d2672bbc8/workers_runtime_sdk-1.9.4-py3-none-any.whl", hash = "sha256:2bd6f5788fd6fdd38ff677e37c93fd92b37ff3a3ab33b43b7ed84ba50688a647", size = 39960, upload-time = "2026-10-16T05:13:19.511Z" },
 ]
