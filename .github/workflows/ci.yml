@@ -87,8 +87,14 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+      # uv check runs the ty version locked in uv.lock (ty is in the default
+      # dev group; uv check ignores the lock for ty in other groups), and
+      # checks PEP 723 scripts such as models/download_models.py against
+      # their own inline dependencies.
       - name: Type check
-        run: uv run ty check --output-format github
+        run: uv check --locked --preview-features check-command
+        env:
+          TY_OUTPUT_FORMAT: github
 
   # Secondary job: the self-hosted generator is an ARM64 Mac, and
   # stylize._select_device() has an MPS branch nothing else exercises.
@@ -307,7 +313,9 @@ jobs:
 
       - name: Type check
         working-directory: worker-py
-        run: uv run ty check --output-format github
+        run: uv check --locked --preview-features check-command
+        env:
+          TY_OUTPUT_FORMAT: github
 
       # Matches the root lint job: pip-audit with no target audits its own
       # environment and reports a confident all-clear, so it is pointed at this
