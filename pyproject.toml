@@ -5,7 +5,9 @@ description = "Daily stylized art service — AdaIN style transfer on Unsplash a
 readme = "README.md"
 license = "MIT"
 # 3.14 everywhere: the Dockerfile builds from python:3.14-slim, both generate
-# workflows run 3.14, and .mise.toml pins 3.14. Nothing runs 3.13.
+# workflows run 3.14, and .mise.toml and .python-version pin 3.14. Nothing runs
+# 3.13. .python-version is for uv, which ignores mise and otherwise picks the
+# newest installed interpreter, one torch may not have wheels for yet.
 requires-python = ">=3.14"
 dependencies = [
     "torch>=2.14.1,<3.0",
