@@ -10,6 +10,7 @@
  *   GET|HEAD /api/:date.json          → metadata for date
  *   GET|HEAD /api/:date.manifest.json → responsive manifest for date
  *   GET|HEAD /api/archive             → dates that have published artwork
+ *   GET|HEAD /api/feed.atom           → Atom feed of the newest artwork
  *   POST     /api/vitals              → ingest Web Vitals RUM (Analytics Engine)
  *   POST     /api/err                 → ingest JS error RUM (Analytics Engine)
  *
@@ -26,6 +27,15 @@
  *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
  */
 
+import {
+  buildAtomFeed,
+  canonicalOrigin,
+  feedEtag,
+  feedUpdated,
+  FEED_ENTRY_LIMIT,
+  type FeedEntryInput,
+  type FeedMetadata,
+} from "./feed";
 import { recordHistory, type HistoryEnv } from "./history";
 
 interface Env {
@@ -517,6 +527,91 @@ async function serveArchive(
   return new Response(isHead ? null : JSON.stringify(body), { status: 200, headers });
 }
 
+// ---------------------------------------------------------------------------
+// Atom feed
+// ---------------------------------------------------------------------------
+
+/**
+ * Cache-Control for /api/feed.atom. An hour is what the RSS best-practices
+ * guide recommends for a daily feed: readers that honour it poll 24 times a
+ * day, and the conditional request each one makes is answered from the R2
+ * listing alone (see feedEtag).
+ */
+const FEED_CACHE = "public, max-age=3600";
+
+function feedHeaders(etag: string, lastModifiedMs?: number): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/atom+xml; charset=utf-8",
+    "Cache-Control": FEED_CACHE,
+    "ETag": etag,
+    ...corsHeaders(),
+  };
+  if (lastModifiedMs !== undefined) {
+    headers["Last-Modified"] = new Date(lastModifiedMs).toUTCString();
+  }
+  return headers;
+}
+
+/** True when If-Modified-Since is at or after the last modification (second precision). */
+function notModifiedSince(ifModifiedSince: string, lastModifiedMs: number): boolean {
+  const since = Date.parse(ifModifiedSince);
+  return !Number.isNaN(since) && Math.floor(lastModifiedMs / 1000) * 1000 <= since;
+}
+
+/** Reads the metadata for each date in parallel, skipping any that have gone missing. */
+async function loadFeedEntries(bucket: R2Bucket, dates: string[]): Promise<FeedEntryInput[]> {
+  const loaded = await Promise.all(
+    dates.map(async (date) => {
+      const obj = await bucket.get(`metadata/${datePath(date)}.json`);
+      if (!obj) return null;
+      return { date, meta: await obj.json<FeedMetadata>() };
+    }),
+  );
+  return loaded.filter((e): e is FeedEntryInput => e !== null);
+}
+
+/**
+ * GET|HEAD /api/feed.atom — the newest FEED_ENTRY_LIMIT days as Atom 1.0.
+ *
+ * Conditional requests are the common case for a feed, so they are answered
+ * as cheaply as possible: If-None-Match costs one R2 list, If-Modified-Since
+ * one list plus the newest day's metadata. Only a full 200 reads every entry.
+ */
+async function serveFeed(request: Request, bucket: R2Bucket, url: URL, isHead: boolean): Promise<Response> {
+  const listing = await listPublishedDates(bucket);
+  const dates = listing.dates.slice(-FEED_ENTRY_LIMIT).reverse();
+  if (dates.length === 0) throw new NoLatestError("No published dates");
+
+  const origin = canonicalOrigin(url);
+  const etag = await feedEtag(dates, origin);
+  const now = Date.now();
+
+  // RFC 9110 §13.1.3: If-Modified-Since is ignored when If-None-Match is present.
+  const ifNoneMatch = request.headers.get("If-None-Match");
+  if (ifNoneMatch !== null) {
+    if (etagMatches(ifNoneMatch, etag)) {
+      return new Response(null, { status: 304, headers: feedHeaders(etag) });
+    }
+  } else {
+    const ifModifiedSince = request.headers.get("If-Modified-Since");
+    if (ifModifiedSince !== null) {
+      const newest = await loadFeedEntries(bucket, dates.slice(0, 1));
+      if (newest.length === 1) {
+        const lastModified = feedUpdated(newest, now);
+        if (notModifiedSince(ifModifiedSince, lastModified)) {
+          return new Response(null, { status: 304, headers: feedHeaders(etag, lastModified) });
+        }
+      }
+    }
+  }
+
+  // HEAD needs only Last-Modified, which is the newest entry's time.
+  const entries = await loadFeedEntries(bucket, isHead ? dates.slice(0, 1) : dates);
+  if (entries.length === 0) throw new NoLatestError("No metadata for published dates");
+  const headers = feedHeaders(etag, feedUpdated(entries, now));
+  return new Response(isHead ? null : buildAtomFeed(entries, origin, now), { status: 200, headers });
+}
+
 /** Builds the shared response headers for image endpoints. */
 function buildImageHeaders(
   key: string,
@@ -816,6 +911,11 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return serveArchive(env.BUCKET, url, isHead);
     }
 
+    // GET|HEAD /api/feed.atom → Atom feed of the newest artwork
+    if (path === "/api/feed.atom") {
+      return serveFeed(request, env.BUCKET, url, isHead);
+    }
+
     if (hasInvalidFormat(url)) {
       return errorResponse(400, "Unsupported format. Use avif, webp, jpeg, or auto");
     }
@@ -881,5 +981,5 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`, isHead);
     }
 
-    return notFound("Not found. Try /api/today, /api/YYYY-MM-DD, or /api/archive");
+    return notFound("Not found. Try /api/today, /api/YYYY-MM-DD, /api/archive, or /api/feed.atom");
 }
