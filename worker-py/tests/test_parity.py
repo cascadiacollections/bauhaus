@@ -144,7 +144,8 @@ class TestNeutralizeOrigin:
         a = neutralize_origin(self.feed("ref.test"), "https://ref.test")
         b = neutralize_origin(self.feed("other.test"), "https://cand.test")
         assert any(d.startswith("body:") for d in compare(a, b))
-        assert "https://other.test" in compare(a, b)[-1]
+        # The foreign origin must survive neutralization, not become {origin}.
+        assert b.body == b"<id>https://other.test/api/feed.atom</id>"
 
 
 class TestCaseMatrix:
