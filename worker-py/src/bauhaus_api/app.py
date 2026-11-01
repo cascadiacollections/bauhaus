@@ -11,44 +11,54 @@ Routes (identical to worker/src/index.ts):
     GET|HEAD /api/:date.json.sig      → detached PGP signature over the metadata
     GET|HEAD /api/:date.manifest.json → responsive manifest for date
     GET|HEAD /api/archive             → dates that have published artwork
+    GET|HEAD /api/feed.atom           → Atom feed of the newest artwork
     GET      /api/health              → publish freshness, for an uptime monitor
     POST     /api/vitals              → ingest Web Vitals RUM (Analytics Engine)
     POST     /api/err                 → ingest JS error RUM (Analytics Engine)
 
 The route ordering below is load bearing. Starlette matches in registration
-order, so the literal ``/api/today*`` and ``/api/:date.json.sig`` paths must be
-declared before the ``/api/{date}.json`` and ``/api/{date}`` patterns that would
-otherwise swallow them.
+order, so the literal ``/api/today*``, ``/api/feed.atom`` and
+``/api/:date.json.sig`` paths must be declared before the ``/api/{date}.json``
+and ``/api/{date}`` patterns that would otherwise swallow them.
 """
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import json
+import time
 import traceback
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 from fastapi import FastAPI, Request, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .logic import (
     ARCHIVE_MAX_LIST_CALLS,
+    FEED_ENTRY_LIMIT,
     INVALID_FORMAT_MESSAGE,
     NOT_FOUND_MESSAGE,
     TELEMETRY_BODY_LIMIT,
     TODAY_CACHE,
     ArchiveQueryError,
+    FeedEntry,
     ImageFormat,
     binary_headers,
     build_archive_page,
+    build_atom_feed,
     candidate_keys,
+    canonical_origin,
     classify_ua,
     cors_headers,
     date_from_metadata_key,
     date_path,
     error_data_point,
     etag_matches,
+    feed_etag,
+    feed_headers,
+    feed_updated,
     get_allowed_origins,
     has_invalid_format,
     health_payload,
@@ -58,6 +68,7 @@ from .logic import (
     json_headers,
     negotiate_format,
     not_modified_headers,
+    not_modified_since,
     parse_archive_query,
     telemetry_cors_headers,
     vitals_data_point,
@@ -94,6 +105,7 @@ class _R2Bucket(Protocol):
 
     async def get(self, key: str) -> _R2Object | None: ...
     async def head(self, key: str) -> object | None: ...
+    async def list(self, **options: object) -> Mapping[str, Any]: ...
 
 
 def _to_js(obj: object) -> object:
@@ -451,6 +463,29 @@ async def err(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
+async def _list_published_dates(bucket: _R2Bucket) -> tuple[list[str], bool]:
+    """Every published date, oldest first, and whether the walk saw them all.
+
+    R2 lists keys in lexicographic order and the keys are metadata/YYYY/MM/DD,
+    so lexicographic order is already chronological order — no sorting needed.
+    """
+    dates: list[str] = []
+    cursor: object = None
+    for _ in range(ARCHIVE_MAX_LIST_CALLS):
+        options: dict[str, object] = {"prefix": "metadata/"}
+        if cursor:
+            options["cursor"] = cursor
+        page = await bucket.list(**options)
+        for obj in page["objects"]:
+            date = date_from_metadata_key(obj.key)
+            if date:
+                dates.append(date)
+        if not page["truncated"]:
+            return dates, True
+        cursor = page["cursor"]
+    return dates, False
+
+
 @app.get("/api/health", include_in_schema=False)
 async def health(request: Request) -> Response:
     """Publish freshness, for an external uptime monitor.
@@ -461,8 +496,6 @@ async def health(request: Request) -> Response:
     never fire. Staleness measured at the serving end catches that, plus R2 write
     failures and publish bugs, in one probe.
     """
-    import time
-
     env = request.scope["env"]
     headers = {"Content-Type": "application/json", "Cache-Control": "no-store", **cors_headers()}
     try:
@@ -495,25 +528,7 @@ async def archive(request: Request) -> Response:
     except ArchiveQueryError as exc:
         return _error_response(400, str(exc))
 
-    # R2 lists keys in lexicographic order and the keys are metadata/YYYY/MM/DD,
-    # so lexicographic order is already chronological order — no sorting needed.
-    dates: list[str] = []
-    cursor: str | None = None
-    complete = False
-    for _ in range(ARCHIVE_MAX_LIST_CALLS):
-        options: dict[str, object] = {"prefix": "metadata/"}
-        if cursor:
-            options["cursor"] = cursor
-        page = await env.BUCKET.list(**options)
-        for obj in page["objects"]:
-            date = date_from_metadata_key(obj.key)
-            if date:
-                dates.append(date)
-        if not page["truncated"]:
-            complete = True
-            break
-        cursor = page["cursor"]
-
+    dates, complete = await _list_published_dates(env.BUCKET)
     body = build_archive_page(dates, complete, limit, before)
     headers = {
         "Content-Type": "application/json",
@@ -523,6 +538,76 @@ async def archive(request: Request) -> Response:
         **cors_headers(),
     }
     content = None if request.method == "HEAD" else _json_body(body)
+    return Response(content=content, status_code=200, headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# Atom feed
+# ---------------------------------------------------------------------------
+
+
+async def _load_feed_entries(bucket: _R2Bucket, dates: Sequence[str]) -> list[FeedEntry]:
+    """Reads the metadata for each date concurrently, skipping any that have gone missing."""
+
+    async def load(date: str) -> FeedEntry | None:
+        obj = await bucket.get(f"metadata/{date_path(date)}.json")
+        if obj is None:
+            return None
+        meta = json.loads(await (await obj.blob()).text())
+        if meta is None:
+            # Property access on null throws in the Worker too.
+            raise TypeError(f"metadata for {date} is null")
+        # Any other non-object JSON reads as a day with no fields, as it does
+        # through property access in the Worker.
+        return FeedEntry(date, meta if isinstance(meta, Mapping) else {})
+
+    loaded = await asyncio.gather(*(load(date) for date in dates))
+    return [entry for entry in loaded if entry is not None]
+
+
+@app.api_route("/api/feed.atom", methods=["GET", "HEAD"], include_in_schema=False)
+async def feed(request: Request) -> Response:
+    """The newest FEED_ENTRY_LIMIT days as Atom 1.0.
+
+    Conditional requests are the common case for a feed, so they are answered as
+    cheaply as possible: If-None-Match costs one R2 list, If-Modified-Since one
+    list plus the newest day's metadata. Only a full 200 reads every entry.
+
+    Routed ahead of the ``?format=`` check, as in the Worker: the feed has no
+    format, so ``?format=png`` is ignored here rather than a 400.
+    """
+    bucket = request.scope["env"].BUCKET
+    is_head = request.method == "HEAD"
+
+    listed, _ = await _list_published_dates(bucket)
+    dates = list(reversed(listed[-FEED_ENTRY_LIMIT:]))
+    if not dates:
+        raise NoLatestError("No published dates")
+
+    origin = canonical_origin(request.url.scheme, request.url.netloc)
+    etag = feed_etag(dates, origin)
+    now_ms = float(time.time_ns() // 1_000_000)
+
+    # RFC 9110 §13.1.3: If-Modified-Since is ignored when If-None-Match is present.
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match is not None:
+        if etag_matches(if_none_match, etag):
+            return Response(status_code=304, headers=feed_headers(etag))
+    else:
+        if_modified_since = request.headers.get("if-modified-since")
+        if if_modified_since is not None:
+            newest = await _load_feed_entries(bucket, dates[:1])
+            if len(newest) == 1:
+                last_modified = feed_updated(newest, now_ms)
+                if not_modified_since(if_modified_since, last_modified):
+                    return Response(status_code=304, headers=feed_headers(etag, last_modified))
+
+    # HEAD needs only Last-Modified, which is the newest entry's time.
+    entries = await _load_feed_entries(bucket, dates[:1] if is_head else dates)
+    if not entries:
+        raise NoLatestError("No metadata for published dates")
+    headers = feed_headers(etag, feed_updated(entries, now_ms))
+    content = None if is_head else build_atom_feed(entries, origin, now_ms).encode()
     return Response(content=content, status_code=200, headers=headers)
 
 

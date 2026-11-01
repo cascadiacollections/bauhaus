@@ -20,9 +20,9 @@ class EnvMiddleware:
         await self.inner(scope, receive, send)
 
 
-def make_client(env: FakeEnv) -> AsyncClient:
+def make_client(env: FakeEnv, base_url: str = "https://api.test") -> AsyncClient:
     transport = ASGITransport(app=EnvMiddleware(app, env))
-    return AsyncClient(transport=transport, base_url="https://api.test")
+    return AsyncClient(transport=transport, base_url=base_url)
 
 
 @pytest.fixture

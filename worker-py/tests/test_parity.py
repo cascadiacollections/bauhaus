@@ -12,11 +12,13 @@ import httpx
 import pytest
 from parity import (
     COMPARED_HEADERS,
+    FEED_ETAG_PLACEHOLDER,
     Case,
     Observed,
     _is_today_case,
     build_cases,
     compare,
+    neutralize_origin,
     normalize_headers,
     render,
     run_all,
@@ -111,6 +113,40 @@ class TestCompare:
         assert len(compare(observed(), cand)) > 3
 
 
+class TestNeutralizeOrigin:
+    ETAG = '"feed-0123456789abcdef0123456789abcdef"'
+
+    def feed(self, host: str, etag: str | None = None) -> Observed:
+        headers = {"Content-Type": "application/atom+xml; charset=utf-8", "ETag": etag or self.ETAG}
+        return Observed(200, headers, f"<id>https://{host}/api/feed.atom</id>".encode())
+
+    def test_each_hosts_own_origin_becomes_the_placeholder(self):
+        a = neutralize_origin(self.feed("ref.test"), "https://ref.test")
+        b = neutralize_origin(self.feed("cand.test", '"feed-fedcba9876543210fedcba9876543210"'), "https://cand.test")
+        assert a.body == b"<id>{origin}/api/feed.atom</id>"
+        assert compare(a, b) == []
+
+    def test_http_base_is_canonicalized_to_https(self):
+        # The Worker always builds https URLs, even when asked over http.
+        a = neutralize_origin(self.feed("localhost:8787"), "http://localhost:8787")
+        assert a.body == b"<id>{origin}/api/feed.atom</id>"
+
+    def test_weak_feed_etag_is_neutralized(self):
+        a = neutralize_origin(self.feed("ref.test", f"W/{self.ETAG}"), "https://ref.test")
+        assert a.headers["ETag"] == FEED_ETAG_PLACEHOLDER
+
+    def test_malformed_etag_still_differs(self):
+        a = neutralize_origin(self.feed("ref.test"), "https://ref.test")
+        b = neutralize_origin(self.feed("cand.test", '"something-else"'), "https://cand.test")
+        assert any("header etag" in d for d in compare(a, b))
+
+    def test_a_different_document_still_differs(self):
+        a = neutralize_origin(self.feed("ref.test"), "https://ref.test")
+        b = neutralize_origin(self.feed("other.test"), "https://cand.test")
+        assert any(d.startswith("body:") for d in compare(a, b))
+        assert "https://other.test" in compare(a, b)[-1]
+
+
 class TestCaseMatrix:
     @pytest.fixture
     def cases(self) -> list[Case]:
@@ -144,6 +180,7 @@ class TestCaseMatrix:
             "/api/2026-09-04.json.sig",
             "/api/2026-09-04.manifest.json",
             "/api/archive",
+            "/api/feed.atom",
             "/api/health",
             "/api/vitals",
             "/api/err",
@@ -161,7 +198,9 @@ class TestCaseMatrix:
 
 
 class TestTodayCaseDetection:
-    @pytest.mark.parametrize("path", ["/api/today", "/api/today.json", "/api/today.manifest.json"])
+    @pytest.mark.parametrize(
+        "path", ["/api/today", "/api/today.json", "/api/today.manifest.json", "/api/feed.atom"]
+    )
     def test_today_routes_are_retried(self, path):
         assert _is_today_case(Case("c", path)) is True
 
@@ -242,6 +281,23 @@ class TestRunAll:
         # Each side echoed its own validator, so the ETag values differing is
         # not itself the difference being reported — the 304 matched on both.
         assert results[0]["status"] == 304
+
+    async def test_origin_dependent_case_compares_host_neutral_bodies(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            digest = "0" * 32 if host == "ref.test" else "f" * 32
+            headers = {"Content-Type": "application/atom+xml; charset=utf-8", "ETag": f'"feed-{digest}"'}
+            return httpx.Response(200, headers=headers, content=f"<id>https://{host}/api/feed.atom</id>".encode())
+
+        results = await self.run(handler, [Case("feed", "/api/feed.atom", origin_dependent=True)])
+        assert results[0]["diffs"] == []
+
+    async def test_origin_is_compared_verbatim_unless_the_case_opts_out(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, headers=JSON_HEADERS, content=f"https://{request.url.host}".encode())
+
+        results = await self.run(handler, [Case("json", "/api/2026-09-04.json")])
+        assert any(d.startswith("body:") for d in results[0]["diffs"])
 
     async def test_missing_etag_is_an_error_not_a_crash(self):
         def handler(request: httpx.Request) -> httpx.Response:

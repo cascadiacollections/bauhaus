@@ -29,12 +29,16 @@ verified against a local `workerd` instance:
 | `GET\|HEAD /api/:date.json.sig` | detached PGP signature |
 | `GET\|HEAD /api/:date.manifest.json` | responsive manifest |
 | `GET\|HEAD /api/archive` | published dates, paged by `?before=` |
+| `GET\|HEAD /api/feed.atom` | Atom 1.0 feed of the newest 30 days |
 | `GET /api/health` | publish freshness |
 | `POST /api/vitals`, `POST /api/err` | RUM ingest to Analytics Engine |
 
 Format negotiation (`?format=`, `Accept`), `?progressive=`, `?strip=`, ETag /
 `If-None-Match` / 304, `head()`-before-`get()` so a 304 or a `HEAD` never reads
-an object body, and origin-gated telemetry CORS all behave as before.
+an object body, and origin-gated telemetry CORS all behave as before. The Atom
+feed renders byte-identical XML to `worker/src/feed.ts` and keeps its validator
+semantics: an `If-None-Match` hit costs one R2 list, `If-Modified-Since` one list
+plus the newest day's metadata, and `HEAD` reads only that one day.
 
 ## Layout
 
@@ -42,7 +46,7 @@ an object body, and origin-gated telemetry CORS all behave as before.
     src/bauhaus_api/app.py        FastAPI routes and R2 access
     src/bauhaus_api/logic.py      Pure logic — stdlib only, no FastAPI or Workers imports
     tools/parity.py               Differential check against the deployed TypeScript worker
-    tests/                        170 tests, runnable under plain CPython
+    tests/                        242 tests, runnable under plain CPython
 
 `logic.py` is deliberately free of runtime imports. It holds the parts with real
 edge cases — negotiation, ETag comparison, archive paging, telemetry shaping —
@@ -55,7 +59,7 @@ FastAPI app is also exercised end-to-end without `workerd`.
 ```bash
 cd worker-py
 uv sync --locked
-uv run pytest              # 170 tests, ~0.3s
+uv run pytest              # 242 tests, ~0.5s
 uv run pywrangler dev      # local workerd + Pyodide
 ```
 
@@ -63,9 +67,10 @@ uv run pywrangler dev      # local workerd + Pyodide
 
 Each implementation is tested against its own expectations, so two suites
 passing only shows that two readings of the same spec agree with themselves.
-`tools/parity.py` sends one matrix of ~60 requests to **both deployed Workers**
+`tools/parity.py` sends one matrix of ~70 requests to **both deployed Workers**
 and diffs status, the headers that matter to clients (`Cache-Control`, `Vary`,
-`ETag`, `X-Variant`, `Content-Type`, `Accept-CH`, CORS) and the response bodies:
+`ETag`, `X-Variant`, `Content-Type`, `Accept-CH`, `Last-Modified`, CORS) and the
+response bodies:
 
 ```bash
 just worker-py-parity                       # both defaults, as CI runs it
@@ -76,12 +81,18 @@ Both Workers read the same bucket, so the ETag, the stored `Cache-Control` and
 the image bytes all come from the same R2 object — a difference is the serving
 layer's, not the data's. The matrix covers format negotiation, `?progressive=`
 and `?strip=`, `If-None-Match` (resolved per host, so neither side is handed the
-other's validator), HEAD, archive paging and its query validation, the
+other's validator), HEAD, archive paging and its query validation, the Atom
+feed and its `If-None-Match` / `If-Modified-Since` paths, the
 never-published 404 path, routing edges, and the telemetry CORS rejections.
 Nothing in it writes: the `POST` cases all carry an Origin the Worker refuses,
 so they return before `writeDataPoint` and leave no rows in Analytics Engine.
 
-`/api/today*` cases are retried once before being reported, so a publish landing
+The feed is the one response built from the request's own hostname, which
+differs between the two Workers. Its cases compare each body with that host's
+origin replaced by a placeholder, and compare the ETag (a hash that includes the
+origin) by shape rather than value.
+
+`/api/today*` and `/api/feed.atom` cases are retried once before being reported, so a publish landing
 mid-run is not mistaken for a regression.
 
 It runs daily at 05:30 UTC and after every `bauhaus-py` deploy
