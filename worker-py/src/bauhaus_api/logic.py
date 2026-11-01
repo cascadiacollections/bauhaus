@@ -470,11 +470,13 @@ _SOURCE_NAMES: dict[str, str] = {
 
 # Characters XML 1.0 forbids outright. Metadata comes from museum APIs, and a
 # single stray control character makes the whole document unparseable.
-_INVALID_XML_CHARS_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+_INVALID_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
 
 # JavaScript's \s, which is not Python's: it includes U+FEFF and excludes
 # U+001C–U+001F and U+0085. Spelled out so clean() collapses the same runs.
-_JS_WHITESPACE_RE = re.compile("[\t\n\v\f\r    -     　﻿]+")
+_JS_WHITESPACE_RE = re.compile(
+    r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+"
+)
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DAY_MS = 86_400_000
