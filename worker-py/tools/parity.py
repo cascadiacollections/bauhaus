@@ -16,6 +16,12 @@ Usage::
         --reference https://bauhaus.cascadiacollections.workers.dev \\
         --candidate https://bauhaus-py.cascadiacollections.workers.dev
 
+The two Workers answer on different hostnames, and the Atom feed is the one
+resource whose bytes depend on that: its URLs are built from the request's own
+origin, and its ETag hashes it. Feed cases therefore compare each body with its
+host's own origin replaced by a placeholder, and compare the ETag's shape rather
+than its value; everything else about them is compared as usual.
+
 Exits non-zero when any case differs. ``--out`` writes the full report as JSON.
 
 Deliberately excluded: requests that would write. ``POST /api/vitals`` and
@@ -33,8 +39,9 @@ import json
 import re
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import cast
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -56,12 +63,13 @@ COMPARED_HEADERS: tuple[str, ...] = (
     "access-control-allow-methods",
     "access-control-allow-headers",
     "access-control-max-age",
+    "last-modified",
 )
 
 #: Content types whose bodies are shown verbatim in a diff. Anything else is
 #: compared by digest, so an image mismatch reports a hash rather than a few
 #: hundred KB of binary.
-_TEXT_TYPES = ("application/json", "text/")
+_TEXT_TYPES = ("application/json", "application/atom+xml", "text/")
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -82,6 +90,9 @@ class Case:
     #: ``If-None-Match``. Resolved separately against each host so neither side
     #: is handed the other's validator.
     etag_from: str | None = None
+    #: The response embeds the requesting host's origin (the Atom feed), so it is
+    #: compared after :func:`neutralize_origin` rather than byte for byte.
+    origin_dependent: bool = False
 
 
 @dataclass(frozen=True)
@@ -130,6 +141,35 @@ def normalize_headers(headers: Mapping[str, str]) -> dict[str, str]:
         for name in COMPARED_HEADERS
         if name in lowered
     }
+
+
+#: Placeholder each host's own origin is replaced with in an origin-dependent body.
+ORIGIN_PLACEHOLDER = "{origin}"
+
+#: The shape of the feed's ETag (``feedEtag`` in worker/src/feed.ts). Its value
+#: hashes the origin, so two hosts can never share one; the shape is compared.
+_FEED_ETAG_RE = re.compile(r'^(W/)?"feed-[0-9a-f]{32}"$')
+FEED_ETAG_PLACEHOLDER = '"feed-<origin-derived>"'
+
+
+def canonical_origin(base: str) -> str:
+    """The origin a Worker builds feed URLs from: always https, the base's host."""
+    return f"https://{urlsplit(base).netloc}"
+
+
+def neutralize_origin(observed: Observed, base: str) -> Observed:
+    """``observed`` with everything derived from ``base``'s hostname made host-neutral.
+
+    The body's origin becomes :data:`ORIGIN_PLACEHOLDER`, and a well-formed feed
+    ETag becomes :data:`FEED_ETAG_PLACEHOLDER`. A malformed ETag is left as it is,
+    so it still shows up as a difference.
+    """
+    body = observed.body.replace(canonical_origin(base).encode(), ORIGIN_PLACEHOLDER.encode())
+    headers = dict(observed.headers)
+    for name, value in observed.headers.items():
+        if name.lower() == "etag" and _FEED_ETAG_RE.match(value.strip()):
+            headers[name] = FEED_ETAG_PLACEHOLDER
+    return replace(observed, headers=headers, body=body)
 
 
 def _is_text(headers: Mapping[str, str]) -> bool:
@@ -246,6 +286,30 @@ def build_cases(today: str, older: str, unpublished: str) -> list[Case]:
         Case("archive/limit-non-numeric", "/api/archive?limit=abc"),
         Case("archive/limit-over-max", "/api/archive?limit=100000"),
         Case("archive/before-malformed", "/api/archive?before=not-a-date"),
+        # /api/feed.atom — the document, HEAD, and both validators. The feed is
+        # routed ahead of the ?format= check, so a bad value there is not a 400.
+        Case("feed/default", "/api/feed.atom", origin_dependent=True),
+        Case("feed/head", "/api/feed.atom", method="HEAD", origin_dependent=True),
+        Case("feed/format-ignored", "/api/feed.atom?format=png", origin_dependent=True),
+        Case("feed/if-none-match", "/api/feed.atom", etag_from="/api/feed.atom", origin_dependent=True),
+        Case(
+            "feed/if-none-match-stale",
+            "/api/feed.atom",
+            headers={"If-None-Match": '"parity-check-not-a-real-etag"'},
+            origin_dependent=True,
+        ),
+        Case(
+            "feed/if-modified-since-past",
+            "/api/feed.atom",
+            headers={"If-Modified-Since": "Thu, 01 Jan 1970 00:00:00 GMT"},
+            origin_dependent=True,
+        ),
+        Case(
+            "feed/if-modified-since-future",
+            "/api/feed.atom",
+            headers={"If-Modified-Since": "Fri, 01 Jan 2100 00:00:00 GMT"},
+            origin_dependent=True,
+        ),
         # /api/health. The body is derived from the published date and a day
         # count, so it is stable between two requests seconds apart.
         Case("health/default", "/api/health"),
@@ -261,6 +325,7 @@ def build_cases(today: str, older: str, unpublished: str) -> list[Case]:
         Case("options/unknown-path", "/api/not-a-route", method="OPTIONS"),
         Case("method/post-today", "/api/today", method="POST"),
         Case("method/delete-date", f"/api/{older}", method="DELETE"),
+        Case("method/post-feed", "/api/feed.atom", method="POST"),
         # Telemetry, rejection paths only — see the module docstring.
         Case(
             "vitals/options-disallowed-origin",
@@ -305,7 +370,8 @@ async def _observe(client: httpx.AsyncClient, base: str, case: Case) -> Observed
         headers["If-None-Match"] = etag
 
     response = await client.request(case.method, base + case.path, headers=headers)
-    return Observed(status=response.status_code, headers=dict(response.headers), body=response.content)
+    observed = Observed(status=response.status_code, headers=dict(response.headers), body=response.content)
+    return neutralize_origin(observed, base) if case.origin_dependent else observed
 
 
 async def run_case(
@@ -328,13 +394,15 @@ async def run_case(
 
 
 def _is_today_case(case: Case) -> bool:
-    """Whether a case resolves through ``latest.json``.
+    """Whether a case resolves to the newest published day.
 
-    A publish landing between the two requests changes the answer under the
-    candidate but not the reference, which looks exactly like a real difference.
-    Only these cases are affected, and only for the seconds around 04:00 UTC.
+    That is everything under ``/api/today`` (through ``latest.json``) and the
+    Atom feed (whose newest entry is the newest day). A publish landing between
+    the two requests changes the answer under the candidate but not the
+    reference, which looks exactly like a real difference. Only these cases are
+    affected, and only for the seconds around 04:00 UTC.
     """
-    return case.path.startswith("/api/today")
+    return case.path.startswith(("/api/today", "/api/feed.atom"))
 
 
 async def run_all(

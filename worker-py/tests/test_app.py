@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import date, timedelta
 
 import pytest
 from conftest import make_client
-from fakes import FakeBucket, FakeEnv, bucket_with_day
+from fakes import FakeBucket, FakeEnv, bucket_with_day, bucket_with_feed
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
-from bauhaus_api.logic import IMMUTABLE_CACHE, TODAY_CACHE
+from bauhaus_api.logic import FEED_ENTRY_LIMIT, IMMUTABLE_CACHE, TODAY_CACHE
 
 pytestmark = pytest.mark.anyio
 
@@ -216,6 +218,139 @@ class TestArchive:
         assert r.headers["access-control-allow-origin"] == "*"
 
 
+class TestFeed:
+    """GET|HEAD /api/feed.atom, mirroring worker/test/feed.test.ts."""
+
+    ETAG_RE = re.compile(r'^"feed-[0-9a-f]{32}"$')
+
+    @staticmethod
+    def dates_ending(last: str, count: int) -> list[str]:
+        """Consecutive dates ending on ``last``, oldest first (the order R2 lists them)."""
+        end = date.fromisoformat(last)
+        return [(end - timedelta(days=count - 1 - i)).isoformat() for i in range(count)]
+
+    @staticmethod
+    def metadata_reads(bucket: FakeBucket) -> int:
+        return sum(1 for key in bucket.get_calls if key.startswith("metadata/"))
+
+    async def get(self, bucket: FakeBucket, headers=None, method="GET", base_url="https://bauhaus.example"):
+        async with make_client(FakeEnv(BUCKET=bucket), base_url=base_url) as client:
+            return await client.request(method, "/api/feed.atom", headers=headers or {})
+
+    async def test_serves_atom_with_caching_and_cors_headers(self):
+        r = await self.get(bucket_with_feed(["2026-10-23", "2026-10-24"]))
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/atom+xml; charset=utf-8"
+        assert r.headers["cache-control"] == "public, max-age=3600"
+        assert r.headers["access-control-allow-origin"] == "*"
+        assert r.headers["access-control-allow-methods"] == "GET, HEAD, OPTIONS"
+        assert self.ETAG_RE.match(r.headers["etag"])
+        assert r.headers["last-modified"] == "Sat, 24 Oct 2026 04:09:21 GMT"
+        assert r.text.index("2026-10-24</id>") < r.text.index("2026-10-23</id>")
+
+    async def test_canonicalizes_http_requests_to_https_urls(self):
+        r = await self.get(bucket_with_feed(["2026-10-24"]), base_url="http://bauhaus.example")
+        assert "<id>https://bauhaus.example/api/feed.atom</id>" in r.text
+        assert "http://bauhaus.example" not in r.text
+
+    async def test_includes_only_the_newest_days_ignoring_signatures(self):
+        dates = self.dates_ending("2026-10-24", FEED_ENTRY_LIMIT + 5)
+        bucket = bucket_with_feed(dates, ["metadata/2026/10/24.json.sig"])
+        r = await self.get(bucket)
+
+        assert r.text.count("<entry>") == FEED_ENTRY_LIMIT
+        assert f"/api/{dates[-1]}</id>" in r.text
+        assert f"/api/{dates[4]}</id>" not in r.text
+        assert self.metadata_reads(bucket) == FEED_ENTRY_LIMIT
+        assert len(r.content) < 1_000_000
+
+    async def test_skips_a_listed_date_whose_metadata_cannot_be_read(self):
+        bucket = bucket_with_feed(["2026-10-23", "2026-10-24"])
+        bucket.vanished.add("metadata/2026/10/24.json")
+        r = await self.get(bucket)
+        assert r.text.count("<entry>") == 1
+        assert "/api/2026-10-23</id>" in r.text
+
+    async def test_matching_if_none_match_is_304_without_reading_metadata(self):
+        bucket = bucket_with_feed(["2026-10-23", "2026-10-24"])
+        etag = (await self.get(bucket)).headers["etag"]
+        bucket.get_calls.clear()
+
+        r = await self.get(bucket, {"If-None-Match": f"W/{etag}"})
+        assert r.status_code == 304
+        assert r.headers["etag"] == etag
+        assert r.headers["cache-control"] == "public, max-age=3600"
+        assert r.headers["access-control-allow-origin"] == "*"
+        assert "last-modified" not in r.headers
+        assert r.content == b""
+        assert bucket.get_calls == []
+
+    async def test_a_new_day_changes_the_etag(self):
+        etag = (await self.get(bucket_with_feed(["2026-10-23"]))).headers["etag"]
+        r = await self.get(bucket_with_feed(["2026-10-23", "2026-10-24"]), {"If-None-Match": etag})
+        assert r.status_code == 200
+
+    async def test_if_modified_since_at_or_after_newest_entry_is_304(self):
+        bucket = bucket_with_feed(["2026-10-23", "2026-10-24"])
+        r = await self.get(bucket, {"If-Modified-Since": "Sat, 24 Oct 2026 04:09:21 GMT"})
+        assert r.status_code == 304
+        assert r.headers["last-modified"] == "Sat, 24 Oct 2026 04:09:21 GMT"
+        assert r.headers["cache-control"] == "public, max-age=3600"
+        assert self.metadata_reads(bucket) == 1
+
+    async def test_older_if_modified_since_is_200(self):
+        bucket = bucket_with_feed(["2026-10-23", "2026-10-24"])
+        r = await self.get(bucket, {"If-Modified-Since": "Sat, 24 Oct 2026 04:09:20 GMT"})
+        assert r.status_code == 200
+
+    async def test_unparseable_if_modified_since_is_200(self):
+        r = await self.get(bucket_with_feed(["2026-10-24"]), {"If-Modified-Since": "yesterday"})
+        assert r.status_code == 200
+
+    async def test_if_modified_since_is_ignored_when_if_none_match_is_present(self):
+        r = await self.get(
+            bucket_with_feed(["2026-10-24"]),
+            {"If-None-Match": '"stale"', "If-Modified-Since": "Sun, 25 Oct 2026 00:00:00 GMT"},
+        )
+        assert r.status_code == 200
+
+    async def test_head_has_get_headers_and_no_body_reading_one_entry(self):
+        bucket = bucket_with_feed(["2026-10-23", "2026-10-24"])
+        full = await self.get(bucket)
+        bucket.get_calls.clear()
+
+        r = await self.get(bucket, method="HEAD")
+        assert r.status_code == 200
+        assert r.content == b""
+        for name in ("content-type", "cache-control", "etag", "last-modified", "access-control-allow-origin"):
+            assert r.headers[name] == full.headers[name], name
+        assert self.metadata_reads(bucket) == 1
+
+    async def test_404_json_when_nothing_is_published(self):
+        r = await self.get(FakeBucket())
+        assert r.status_code == 404
+        assert r.json() == {"error": "No artwork published yet"}
+        assert r.headers["access-control-allow-origin"] == "*"
+
+    async def test_format_param_is_ignored(self):
+        # Routed ahead of the ?format= check in the Worker, so a bad value is not a 400.
+        async with make_client(FakeEnv(BUCKET=bucket_with_feed(["2026-10-24"]))) as client:
+            r = await client.get("/api/feed.atom?format=png")
+        assert r.status_code == 200
+
+    async def test_other_methods_are_405(self):
+        r = await self.get(bucket_with_feed(["2026-10-24"]), method="POST")
+        assert r.status_code == 405
+        assert r.json() == {"error": "Method not allowed"}
+
+    async def test_storage_failure_is_503(self):
+        bucket = bucket_with_feed(["2026-10-24"])
+        bucket.fail = True
+        r = await self.get(bucket)
+        assert r.status_code == 503
+        assert r.json() == {"error": "Upstream storage unavailable"}
+
+
 class TestHealth:
     async def test_ok_when_fresh(self):
         from datetime import UTC, datetime
@@ -283,7 +418,7 @@ class TestErrors:
         body = bytes(response.body)
         assert leaked not in body.decode()
         assert json.loads(body) == {
-            "error": "Not found. Try /api/today, /api/YYYY-MM-DD, or /api/archive"
+            "error": "Not found. Try /api/today, /api/YYYY-MM-DD, /api/archive, or /api/feed.atom"
         }
 
     async def test_options_preflight(self, client):

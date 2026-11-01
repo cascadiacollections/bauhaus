@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import re
+
 import pytest
+from fakes import feed_metadata
 
 from bauhaus_api import logic
 
@@ -266,3 +270,176 @@ class TestHealth:
 
 def test_date_path():
     assert logic.date_path("2026-09-04") == "2026/09/04"
+
+
+class TestFeed:
+    """The Atom renderer, mirroring the helper tests in worker/test/feed.test.ts."""
+
+    NOW = logic.parse_date_ms("2026-10-25T20:00:00Z")
+    ORIGIN = "https://bauhaus.example"
+
+    @staticmethod
+    def entry(date: str, **overrides: object) -> logic.FeedEntry:
+        return logic.FeedEntry(date, feed_metadata(date, **overrides))
+
+    def test_escapes_the_five_xml_specials_and_drops_forbidden_characters(self):
+        assert logic.escape_xml("a&b<c>d\"e'f\u0001g\ufffe") == "a&amp;b&lt;c&gt;d&quot;e&apos;fg"
+
+    @pytest.mark.parametrize(
+        ("scheme", "netloc", "expected"),
+        [
+            ("http", "bauhaus.example", "https://bauhaus.example"),
+            ("http", "Bauhaus.Example:80", "https://bauhaus.example"),
+            ("https", "bauhaus.example:443", "https://bauhaus.example"),
+            ("http", "localhost:8787", "https://localhost:8787"),
+        ],
+    )
+    def test_canonicalizes_the_origin_to_https(self, scheme, netloc, expected):
+        assert logic.canonical_origin(scheme, netloc) == expected
+
+    def test_uses_generated_at_truncated_to_the_second(self):
+        t = logic.entry_timestamp(self.entry("2026-10-24"), self.NOW)
+        assert t == logic.parse_date_ms("2026-10-24T04:09:21Z")
+
+    @pytest.mark.parametrize(
+        "generated_at",
+        [None, "yesterday", "2026-10-20T04:00:00Z", "2026-12-01T04:00:00Z"],
+        ids=["missing", "unparseable", "before the publish date", "long after (backfill)"],
+    )
+    def test_falls_back_to_midnight_utc(self, generated_at):
+        t = logic.entry_timestamp(self.entry("2026-10-24", generated_at=generated_at), self.NOW)
+        assert t == logic.parse_date_ms("2026-10-24T00:00:00Z")
+
+    def test_never_returns_a_time_in_the_future(self):
+        entry = self.entry("2026-10-25", generated_at="2026-10-25T23:00:00Z")
+        assert logic.entry_timestamp(entry, self.NOW) == logic.parse_date_ms("2026-10-25T00:00:00Z")
+
+    def test_an_impossible_date_is_nan_as_in_javascript(self):
+        assert math.isnan(logic.entry_timestamp(logic.FeedEntry("2026-13-45", {}), self.NOW))
+        assert logic.http_date(math.nan) == "Invalid Date"
+
+    def test_titles_entries_title_dash_artist_falling_back_to_photographer(self):
+        assert (
+            logic.entry_title(self.entry("2026-10-24"))
+            == "Sailing Boats Returning to Yabase, Lake Biwa — Utagawa Hiroshige"
+        )
+        photo = logic.FeedEntry("2026-06-09", {"title": "Scenery of mountain", "photographer": "John Lee"})
+        assert logic.entry_title(photo) == "Scenery of mountain — John Lee"
+        assert logic.entry_title(logic.FeedEntry("2026-06-09", {})) == "Bauhaus for 2026-06-09"
+
+    def test_renders_absolute_semantic_class_free_content_with_full_credit(self):
+        html = logic.entry_content(self.entry("2026-10-24"), self.ORIGIN)
+        assert (
+            '<img src="https://bauhaus.example/api/2026-10-24?format=jpeg" '
+            'alt="Sailing Boats Returning to Yabase, Lake Biwa by Utagawa Hiroshige, '
+            'restyled in the style of Vincent van Gogh" width="2000" height="1361">'
+        ) in html
+        assert (
+            "<cite>Sailing Boats Returning to Yabase, Lake Biwa</cite> by Utagawa Hiroshige (ca. 1835)"
+        ) in html
+        assert (
+            '<a href="https://www.metmuseum.org/art/collection/search/36534">'
+            "The Metropolitan Museum of Art</a>"
+        ) in html
+        assert "<cite>Wheat Field with Cypresses</cite></a> by Vincent van Gogh" in html
+        assert '<a href="https://creativecommons.org/publicdomain/zero/1.0/">CC0-1.0</a>' in html
+        assert not re.search(r"class=|style=|<script", html, re.IGNORECASE)
+        assert not re.search(r'(src|href)="(?!https://)', html)
+
+    def test_escapes_hostile_metadata_and_drops_non_http_links(self):
+        entry = self.entry(
+            "2026-10-24", title='<script>alert("x")</script> & co', source_url="javascript:alert(1)"
+        )
+        html = logic.entry_content(entry, self.ORIGIN)
+        assert "<script>" not in html
+        assert "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; co" in html
+        assert "javascript:" not in html
+
+    def test_a_non_string_field_is_an_error_as_in_the_worker(self):
+        with pytest.raises(TypeError):
+            logic.entry_title(logic.FeedEntry("2026-10-24", {"title": 5}))
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("https://www.metmuseum.org/art/collection/search/36534", None),
+            ("http://example.com", "http://example.com/"),
+            ("HTTPS://Unsplash.COM:443/@john lee/../x?utm=a b'c#frag ment",
+             "https://unsplash.com/x?utm=a%20b%27c#frag%20ment"),
+            ("https:example.com\\path", "https://example.com/path"),
+            ("https://bücher.example/ü", "https://xn--bcher-kva.example/%C3%BC"),
+            ("https://a.example:8443", "https://a.example:8443/"),
+        ],
+    )
+    def test_links_are_serialized_as_url_href(self, value, expected):
+        # Expected values are what `new URL(value).href` gives; None means unchanged.
+        assert logic.http_url_href(value) == (expected or value)
+
+    @pytest.mark.parametrize(
+        "value", [None, "", 5, "javascript:alert(1)", "ftp://x", "/relative", "https://", "https://a b/", "https://a:99999/"]
+    )
+    def test_non_http_or_malformed_links_are_dropped(self, value):
+        assert logic.http_url_href(value) is None
+
+    def test_builds_a_document_with_stable_ids_self_link_and_newest_updated(self):
+        xml = logic.build_atom_feed(
+            [self.entry("2026-10-24"), self.entry("2026-10-23")], self.ORIGIN, self.NOW
+        )
+        assert xml.startswith(
+            '<?xml version="1.0" encoding="utf-8"?>\n<feed xmlns="http://www.w3.org/2005/Atom"'
+        )
+        assert f"<title>{logic.FEED_TITLE}</title>" in xml
+        assert "<id>https://bauhaus.example/api/feed.atom</id>" in xml
+        assert (
+            '<link rel="self" type="application/atom+xml" href="https://bauhaus.example/api/feed.atom"/>'
+        ) in xml
+        assert '<link rel="alternate" type="text/html" href="https://kevintcoughlin.com/"/>' in xml
+        assert "  <updated>2026-10-24T04:09:21Z</updated>" in xml
+        assert "<id>https://bauhaus.example/api/2026-10-23</id>" in xml
+        assert "<published>2026-10-23T04:09:21Z</published>" in xml
+        assert '<category term="met" label="The Metropolitan Museum of Art"/>' in xml
+        assert '<category term="Vincent van Gogh" label="Style: Vincent van Gogh"/>' in xml
+        # Entry HTML is escaped once into the XML, so no raw markup leaks into it.
+        assert (
+            '<content type="html">&lt;figure&gt;&lt;img src=&quot;'
+            "https://bauhaus.example/api/2026-10-24?format=jpeg&quot;"
+        ) in xml
+        assert xml.count("<entry>") == 2
+        assert xml.endswith("</feed>\n")
+
+    def test_is_byte_identical_across_rebuilds(self):
+        entries = [self.entry("2026-10-24")]
+        assert logic.build_atom_feed(entries, "https://b.example", self.NOW) == logic.build_atom_feed(
+            entries, "https://b.example", self.NOW + 86_400_000
+        )
+
+    def test_derives_the_etag_from_the_dates_and_origin(self):
+        a = logic.feed_etag(["2026-10-24", "2026-10-23"], "https://b.example")
+        assert re.match(r'^"feed-[0-9a-f]{32}"$', a)
+        assert logic.feed_etag(["2026-10-24", "2026-10-23"], "https://b.example") == a
+        assert logic.feed_etag(["2026-10-25", "2026-10-24"], "https://b.example") != a
+        assert logic.feed_etag(["2026-10-24", "2026-10-23"], "https://c.example") != a
+
+    def test_etag_matches_the_workers_digest(self):
+        # sha256("1\nhttps://b.example\n2026-10-24\n2026-10-23")[:16], as feedEtag computes it.
+        assert logic.feed_etag(["2026-10-24", "2026-10-23"], "https://b.example") == (
+            '"feed-81e175274fef0955dba6fe7221981fa4"'
+        )
+
+    @pytest.mark.parametrize(
+        ("header", "expected"),
+        [
+            ("Sat, 24 Oct 2026 04:09:21 GMT", True),
+            ("Sat, 24 Oct 2026 04:09:20 GMT", False),
+            ("2026-10-24T04:09:21Z", True),
+            ("yesterday", False),
+            ("", False),
+        ],
+    )
+    def test_not_modified_since_has_second_precision(self, header, expected):
+        last_modified = logic.parse_date_ms("2026-10-24T04:09:21.999Z")
+        assert logic.not_modified_since(header, last_modified) is expected
+
+    def test_last_modified_is_an_http_date(self):
+        last_modified = logic.parse_date_ms("2026-10-24T04:09:21.999Z")
+        assert logic.http_date(last_modified) == "Sat, 24 Oct 2026 04:09:21 GMT"

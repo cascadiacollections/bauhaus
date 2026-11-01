@@ -51,6 +51,9 @@ class FakeBucket:
         self.head_calls: list[str] = []
         #: Set to raise from get()/head(), to simulate an R2 outage.
         self.fail = False
+        #: Keys that list() still reports but get() no longer finds, as when an
+        #: object is deleted between the two calls.
+        self.vanished: set[str] = set()
 
     def put(
         self, key: str, data: bytes, etag: str | None = None, cache_control: str | None = None
@@ -66,6 +69,8 @@ class FakeBucket:
         self.get_calls.append(key)
         if self.fail:
             raise RuntimeError("R2 unavailable")
+        if key in self.vanished:
+            return None
         return self.objects.get(key)
 
     async def head(self, key: str) -> FakeR2Object | None:
@@ -126,4 +131,35 @@ def bucket_with_day(date: str = "2026-09-04", *, latest: bool = True) -> FakeBuc
     )
     bucket.put(f"metadata/{path}.json.sig", b"-----BEGIN PGP SIGNATURE-----", etag='"sig-etag"')
     bucket.put(f"manifests/{path}.json", json.dumps({"sizes": []}).encode(), etag='"man-etag"')
+    return bucket
+
+
+def feed_metadata(date: str, **overrides: object) -> dict[str, object]:
+    """A day's metadata as the pipeline writes it; the fixture the Worker's feed tests use."""
+    meta: dict[str, object] = {
+        "published_date": date,
+        "generated_at": f"{date}T04:09:21.422938+00:00",
+        "title": "Sailing Boats Returning to Yabase, Lake Biwa",
+        "artist": "Utagawa Hiroshige",
+        "date": "ca. 1835",
+        "source": "met",
+        "source_url": "https://www.metmuseum.org/art/collection/search/36534",
+        "license": "CC0-1.0",
+        "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "style_artist": "Vincent van Gogh",
+        "style_title": "Wheat Field with Cypresses",
+        "style_source_url": "https://www.metmuseum.org/art/collection/search/436535",
+        "variants": [{"type": "stylized", "width": 2000, "height": 1361}],
+    }
+    meta.update(overrides)
+    return meta
+
+
+def bucket_with_feed(dates: list[str], extra_keys: list[str] | None = None) -> FakeBucket:
+    """A bucket holding only the metadata objects the feed reads, one per date."""
+    bucket = FakeBucket()
+    for date in dates:
+        bucket.put(f"metadata/{date.replace('-', '/')}.json", json.dumps(feed_metadata(date)).encode())
+    for key in extra_keys or []:
+        bucket.put(key, b"")
     return bucket
