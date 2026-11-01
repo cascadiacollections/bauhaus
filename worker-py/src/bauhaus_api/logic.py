@@ -470,13 +470,13 @@ _SOURCE_NAMES: dict[str, str] = {
 
 # Characters XML 1.0 forbids outright. Metadata comes from museum APIs, and a
 # single stray control character makes the whole document unparseable.
-_INVALID_XML_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]")
+_INVALID_XML_CHARS: dict[int, None] = dict.fromkeys(
+    [*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0xFFFE, 0xFFFF]
+)
 
 # JavaScript's \s, which is not Python's: it includes U+FEFF and excludes
 # U+001C–U+001F and U+0085. Spelled out so clean() collapses the same runs.
-_JS_WHITESPACE_RE = re.compile(
-    r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+"
-)
+_JS_WHITESPACE_RE = re.compile(r"[\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 _DAY_MS = 86_400_000
@@ -493,7 +493,7 @@ class FeedEntry:
 def escape_xml(value: str) -> str:
     """Escapes text for XML element content and double-quoted attributes."""
     return (
-        _INVALID_XML_CHARS_RE.sub("", value)
+        value.translate(_INVALID_XML_CHARS)
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
@@ -716,11 +716,7 @@ def entry_timestamp(entry: FeedEntry, now_ms: float) -> float:
     """
     midnight = parse_date_ms(f"{entry.date}T00:00:00Z")
     generated = parse_date_ms(entry.meta.get("generated_at"))
-    if (
-        not math.isnan(generated)
-        and midnight <= generated < midnight + 2 * _DAY_MS
-        and generated <= now_ms
-    ):
+    if not math.isnan(generated) and midnight <= generated < midnight + 2 * _DAY_MS and generated <= now_ms:
         return float(math.floor(generated / 1000) * 1000)
     # Math.min propagates NaN; Python's min() would not reliably.
     return math.nan if math.isnan(midnight) else min(midnight, now_ms)
@@ -746,7 +742,7 @@ def _artist(meta: Mapping[str, Any]) -> str:
 
 
 def entry_title(entry: FeedEntry) -> str:
-    """"Title — Artist", or whichever of the two exists, or the date."""
+    """ "Title — Artist", or whichever of the two exists, or the date."""
     title = _clean(entry.meta.get("title"))
     artist = _artist(entry.meta)
     if title and artist:
@@ -779,9 +775,7 @@ def _stylized_size(meta: Mapping[str, Any]) -> str:
     variants = meta.get("variants")
     if not isinstance(variants, list):
         return ""
-    stylized = next(
-        (v for v in variants if isinstance(v, Mapping) and v.get("type") == "stylized"), None
-    )
+    stylized = next((v for v in variants if isinstance(v, Mapping) and v.get("type") == "stylized"), None)
     if stylized is None:
         return ""
     width = _js_integer(stylized.get("width"))
