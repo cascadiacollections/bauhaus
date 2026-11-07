@@ -35,10 +35,6 @@ constraint-dependencies = ["setuptools>=83.0.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
-[tool.ty.src]
-# worker-py is its own project with its own environment and ty config.
-exclude = ["worker-py"]
-
 [tool.ty.environment]
 extra-paths = ["tests"]
 

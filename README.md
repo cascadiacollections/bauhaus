@@ -279,8 +279,7 @@ Before promoting 3.15, require both compatibility jobs to pass and compare a
 full dry-run generation against 3.14 on the deployment platforms, including
 output quality, total runtime, style-transfer runtime, and peak memory. Update
 the Docker, mise, generation workflow, and tool target pins together only after
-that validation. The Cloudflare Python Worker has its own runtime and dependency
-set and is outside this generator compatibility check.
+that validation.
 
 ### Development commands
 

@@ -18,10 +18,8 @@ updates:
   # "uv", not "pip": the pip ecosystem edits pyproject.toml but leaves
   # uv.lock untouched, which silently desynchronises the lockfile from the
   # declared constraints. The uv ecosystem updates both together.
-  # worker-py has its own uv project and lock; without it here its
-  # dependencies (certifi, for one) only moved when someone relocked by hand.
   - package-ecosystem: "uv"
-    directories: ["/", "/worker-py"]
+    directories: ["/"]
     schedule:
       interval: "weekly"
     cooldown:

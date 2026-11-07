@@ -61,10 +61,3 @@ worker-check:
 worker-deploy:
     cd worker && npx wrangler deploy
 
-# Run the Python port's test suite
-worker-py-test:
-    cd worker-py && uv run pytest -v
-
-# Diff the deployed Python API against the deployed TypeScript one
-worker-py-parity *ARGS:
-    cd worker-py && uv run python tools/parity.py {{ ARGS }}
