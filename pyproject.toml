@@ -10,10 +10,10 @@ license = "MIT"
 # newest installed interpreter, one torch may not have wheels for yet.
 requires-python = ">=3.14"
 dependencies = [
-    "torch>=2.14.1,<3.0",
-    "torchvision>=0.29.0,<1.0",
+    "torch>=2.15.0,<3.0",
+    "torchvision>=0.29.2,<1.0",
     "pillow>=13.0.0,<14.0",
-    "boto3>=1.43.118,<2.0",
+    "boto3>=1.43.123,<2.0",
     "requests>=2.34.2,<3.0",
     # Imported directly by src/quality.py — previously only resolved as a
     # transitive dependency of torch/torchvision.
@@ -22,8 +22,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.1",
-    "ty>=0.0.91",
+    "pytest>=9.2.0",
+    "ty>=0.0.95",
 ]
 
 [tool.uv]
