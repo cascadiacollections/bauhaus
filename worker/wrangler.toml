@@ -37,5 +37,5 @@ crons = ["30 11 * * *"]
 [vars]
 ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"
 HISTORY_REPO = "bauhaus-history"
-# Public repo whose releases (art-YYYY-MM-DD, art-index) hold the published art.
+# Public repo whose art-YYYY-MM-DD releases hold the published art.
 ASSETS_REPO = "cascadiacollections/bauhaus"

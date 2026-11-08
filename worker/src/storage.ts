@@ -14,49 +14,45 @@
  *                    objects.json — maps each old R2 key to
  *                    {asset, etag, size, contentType, cacheControl, uploaded}.
  *                    A key absent from objects.json does not exist.
- *   art-index        dates.json {"dates": [...]} (newest first),
- *                    latest.json {"date": "YYYY-MM-DD"}.
+ *                    dates.json — {"dates": [...]}, every date published up
+ *                    to and including this one, newest first.
+ *
+ * There is no index release: the repo has immutable releases, so no asset can
+ * ever be replaced. The latest date is found by probing day releases newest
+ * first from the current UTC date (LATEST_WINDOW_DAYS); latest.json is
+ * synthesized from it, and the archive comes from that day's dates.json.
  *
  * Downloads go to https://github.com/{repo}/releases/download/{tag}/{asset},
  * which needs no token and is not subject to api.github.com's per-IP rate
  * limit; GitHub 302s to its asset CDN and fetch() follows. Every download goes
  * through the Cache API so a busy day costs GitHub almost nothing:
  *
- *   day-release assets and objects.json  1 year (published once, immutable)
- *   art-index assets                     INDEX_TTL seconds
- *   a 404 from GitHub                    MISSING_TTL / INDEX_MISSING_TTL
- *                                        seconds, so a day published later
- *                                        becomes visible quickly
+ *   any asset that exists   1 year (releases are immutable)
+ *   a 404 from GitHub       MISSING_TTL seconds, so a day published later —
+ *                           including today, probed before its publish —
+ *                           becomes visible quickly
  *
  * A 404 is "not found" (get/head return null, as R2 did). Any other non-2xx
  * status or a network failure throws, which index.ts's top-level handler turns
  * into the same 503 "Upstream storage unavailable" an R2 fault produced.
  */
 
-/** Release tag holding dates.json and latest.json. */
-export const INDEX_TAG = "art-index";
-
-/** Seconds a day-release asset (and its objects.json) stays cached: one year. */
+/** Seconds a release asset that exists stays cached: one year. */
 export const IMMUTABLE_TTL = 31_536_000;
 
-/** Seconds dates.json / latest.json stay cached; they change once a day. */
-export const INDEX_TTL = 60;
-
-/** Seconds a 404 for a day-release asset stays cached. */
+/** Seconds a 404 for a release asset stays cached. */
 export const MISSING_TTL = 60;
 
 /**
- * Seconds a 404 for an index asset stays cached. Shorter than MISSING_TTL:
- * GitHub cannot replace an asset atomically, so the publisher's delete-then-
- * upload of latest.json leaves a brief window where it 404s, and caching that
- * for long would report "no artwork published" well after it has been.
+ * How many UTC days the latest-date probe covers: today, today-1, ...,
+ * today-13. Nothing in that window reads as "no artwork published", as a
+ * missing latest.json did — /api/health reports stale long before then.
  */
-export const INDEX_MISSING_TTL = 15;
+export const LATEST_WINDOW_DAYS = 14;
 
 /**
  * Cache-Control the publisher stored on latest.json in R2 (LATEST_CACHE in
- * src/upload.py). Release assets carry no per-object metadata, so the adapter
- * reports it for the index assets itself.
+ * src/upload.py), reported on the synthesized latest.json.
  */
 export const LATEST_CACHE = "public, max-age=300";
 
@@ -88,8 +84,13 @@ export interface WaitUntil {
  * The single construction point for the Worker's storage. Callers keep their
  * R2Bucket-typed parameters; only this decides what backs them.
  */
-export function storageFor(env: StorageEnv, ctx?: WaitUntil): R2Bucket {
-  return env.BUCKET ?? new GitHubReleasesBucket(env, ctx);
+export function storageFor(env: StorageEnv, ctx?: WaitUntil, now?: () => Date): R2Bucket {
+  return env.BUCKET ?? new GitHubReleasesBucket(env, ctx, now);
+}
+
+/** latest.json's bytes, exactly as Python's json.dumps({"date": date}) wrote them. */
+export function latestJson(date: string): string {
+  return `{"date": "${date}"}`;
 }
 
 /** One entry of a day release's objects.json. */
@@ -103,18 +104,22 @@ export interface ObjectEntry {
 }
 
 type DayLocation = { kind: "day"; date: string; tag: string };
-type IndexLocation = { kind: "index"; asset: "latest.json" | "dates.json" };
+type LatestLocation = { kind: "latest" };
 
 /**
- * Where an R2 key lives: a day release (looked up via objects.json) or an
- * index asset. Null for any other key — R2 would have had nothing there.
+ * Where an R2 key lives: a day release (looked up via objects.json) or the
+ * synthesized latest.json. Null for any other key — R2 had nothing there.
  */
-export function locateKey(key: string): DayLocation | IndexLocation | null {
-  if (key === "latest.json" || key === "dates.json") return { kind: "index", asset: key };
+export function locateKey(key: string): DayLocation | LatestLocation | null {
+  if (key === "latest.json") return { kind: "latest" };
   const m = key.match(/^(?:originals|stylized|metadata|manifests)\/(\d{4})\/(\d{2})\/(\d{2})\.[^/]+$/);
   if (!m) return null;
   const date = `${m[1]}-${m[2]}-${m[3]}`;
-  return { kind: "day", date, tag: `art-${date}` };
+  return { kind: "day", date, tag: tagFor(date) };
+}
+
+function tagFor(date: string): string {
+  return `art-${date}`;
 }
 
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -218,10 +223,18 @@ function readOnly(): never {
 
 export class GitHubReleasesBucket implements R2Bucket {
   private readonly repo: string;
-  /** objects.json per tag, so one request's several head() calls parse it once. */
+  /** objects.json per tag, so one request's several lookups parse it once. */
   private readonly objectsByTag = new Map<string, Promise<Record<string, ObjectEntry> | null>>();
+  /** The latest-date probe, run at most once per instance (one per request). */
+  private latest?: Promise<string | null>;
+  /** The latest day's dates.json, read at most once per instance. */
+  private dates?: Promise<string[]>;
 
-  constructor(env: StorageEnv, private readonly ctx?: WaitUntil) {
+  constructor(
+    env: StorageEnv,
+    private readonly ctx?: WaitUntil,
+    private readonly now: () => Date = () => new Date(),
+  ) {
     const repo = env.ASSETS_REPO;
     if (!repo || !REPO_PATTERN.test(repo)) {
       throw new StorageError(`ASSETS_REPO must be "owner/repo", got ${JSON.stringify(repo)}`);
@@ -232,11 +245,7 @@ export class GitHubReleasesBucket implements R2Bucket {
   async head(key: string): Promise<R2Object | null> {
     const loc = locateKey(key);
     if (!loc) return null;
-    if (loc.kind === "index") {
-      // Index assets are a few bytes and have no stored etag, so the etag
-      // has to come from the bytes themselves.
-      return this.getIndex(key, loc.asset);
-    }
+    if (loc.kind === "latest") return this.getLatest(key);
     const entry = await this.lookup(loc, key);
     if (!entry) return null;
     return new AssetObject(key, entry.etag, entry.size, parseDate(entry.uploaded), {
@@ -253,11 +262,11 @@ export class GitHubReleasesBucket implements R2Bucket {
     }
     const loc = locateKey(key);
     if (!loc) return null;
-    if (loc.kind === "index") return this.getIndex(key, loc.asset);
+    if (loc.kind === "latest") return this.getLatest(key);
 
     const entry = await this.lookup(loc, key);
     if (!entry) return null;
-    const res = await this.download(assetUrl(this.repo, loc.tag, entry.asset), IMMUTABLE_TTL, MISSING_TTL);
+    const res = await this.download(assetUrl(this.repo, loc.tag, entry.asset));
     // Listed in objects.json but not downloadable: treat as absent, as R2
     // would for a key that is not there, rather than serving a broken body.
     if (!res) return null;
@@ -272,21 +281,15 @@ export class GitHubReleasesBucket implements R2Bucket {
   }
 
   /**
-   * Published metadata keys (`metadata/YYYY/MM/DD.json`), from dates.json, in
-   * R2's lexicographic ascending order — which is chronological — and always
-   * in one page. Only those keys can be enumerated; the `.json.sig` siblings
-   * R2 would also have listed are omitted, and every caller skips them anyway.
+   * Published metadata keys (`metadata/YYYY/MM/DD.json`), from the latest
+   * day's dates.json, in R2's lexicographic ascending order — which is
+   * chronological — and always in one page. Only those keys can be
+   * enumerated; the `.json.sig` siblings R2 would also have listed are
+   * omitted, and every caller skips them anyway.
    */
   async list(options?: R2ListOptions): Promise<R2Objects> {
-    const res = await this.download(assetUrl(this.repo, INDEX_TAG, "dates.json"), INDEX_TTL, INDEX_MISSING_TTL);
-    let dates: string[] = [];
-    if (res) {
-      const parsed = await res.json<{ dates?: unknown }>().catch(() => null);
-      if (!parsed || !Array.isArray(parsed.dates)) {
-        throw new StorageError("dates.json is malformed");
-      }
-      dates = parsed.dates.filter((d): d is string => typeof d === "string" && DATE_PATTERN.test(d));
-    }
+    const latest = await this.findLatest();
+    const dates = latest === null ? [] : await (this.dates ??= this.loadDates(latest));
 
     const prefix = options?.prefix ?? "";
     const startAfter = options?.startAfter;
@@ -317,29 +320,75 @@ export class GitHubReleasesBucket implements R2Bucket {
     return readOnly();
   }
 
-  /** latest.json / dates.json as an R2ObjectBody with a sha256 etag of its bytes. */
-  private async getIndex(key: string, asset: IndexLocation["asset"]): Promise<AssetObjectBody | null> {
-    const res = await this.download(assetUrl(this.repo, INDEX_TAG, asset), INDEX_TTL, INDEX_MISSING_TTL);
-    if (!res) return null;
-    const bytes = await res.arrayBuffer();
+  /** latest.json synthesized from the probe, with a sha256 etag of its bytes. */
+  private async getLatest(key: string): Promise<AssetObjectBody | null> {
+    const date = await this.findLatest();
+    if (date === null) return null;
+    const bytes = new TextEncoder().encode(latestJson(date)).buffer as ArrayBuffer;
     return new AssetObjectBody(
       key,
       await sha256Hex(bytes),
       bytes.byteLength,
-      parseDate(res.headers.get("Last-Modified")),
+      parseDate(`${date}T00:00:00Z`),
       { contentType: "application/json", cacheControl: LATEST_CACHE },
       new Response(bytes),
     );
   }
 
+  /**
+   * The newest published date: the first of today, today-1, ... (UTC,
+   * LATEST_WINDOW_DAYS in all) whose objects.json exists, or null. Sequential
+   * so it stops at the first hit; hits are cached for a year and misses for
+   * MISSING_TTL, so a warm probe is only Cache API lookups. A non-404 failure
+   * rejects rather than skipping the day — skipping would report an older
+   * day as latest during a GitHub outage.
+   */
+  private findLatest(): Promise<string | null> {
+    this.latest ??= (async () => {
+      const now = this.now();
+      for (let back = 0; back < LATEST_WINDOW_DAYS; back++) {
+        const date = new Date(
+          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - back),
+        ).toISOString().slice(0, 10);
+        if (await this.objectsFor(tagFor(date))) return date;
+      }
+      return null;
+    })();
+    return this.latest;
+  }
+
+  /** The dates in `latest`'s dates.json snapshot, always including `latest`. */
+  private async loadDates(latest: string): Promise<string[]> {
+    const tag = tagFor(latest);
+    const res = await this.download(assetUrl(this.repo, tag, "dates.json"));
+    if (!res) {
+      // A publishing fault: the release has objects.json but no dates.json,
+      // and immutable releases mean it will never gain one. Serve the one day
+      // known to exist rather than an empty archive or a day-long 503.
+      console.error(`dates.json missing from ${tag}`);
+      return [latest];
+    }
+    const parsed = await res.json<{ dates?: unknown }>().catch(() => null);
+    if (!parsed || !Array.isArray(parsed.dates)) {
+      throw new StorageError(`dates.json in ${tag} is malformed`);
+    }
+    const dates = parsed.dates.filter((d): d is string => typeof d === "string" && DATE_PATTERN.test(d));
+    return dates.includes(latest) ? dates : [...dates, latest];
+  }
+
+  /** objects.json for a release, fetched once per instance; null if it 404s. */
+  private objectsFor(tag: string): Promise<Record<string, ObjectEntry> | null> {
+    let objects = this.objectsByTag.get(tag);
+    if (!objects) {
+      objects = this.loadObjects(tag);
+      this.objectsByTag.set(tag, objects);
+    }
+    return objects;
+  }
+
   /** The objects.json entry for `key`, or null when the day or key is absent. */
   private async lookup(loc: DayLocation, key: string): Promise<ObjectEntry | null> {
-    let objects = this.objectsByTag.get(loc.tag);
-    if (!objects) {
-      objects = this.loadObjects(loc.tag);
-      this.objectsByTag.set(loc.tag, objects);
-    }
-    const map = await objects;
+    const map = await this.objectsFor(loc.tag);
     if (!map || !Object.hasOwn(map, key)) return null;
     const entry = map[key];
     if (
@@ -355,7 +404,7 @@ export class GitHubReleasesBucket implements R2Bucket {
   }
 
   private async loadObjects(tag: string): Promise<Record<string, ObjectEntry> | null> {
-    const res = await this.download(assetUrl(this.repo, tag, "objects.json"), IMMUTABLE_TTL, MISSING_TTL);
+    const res = await this.download(assetUrl(this.repo, tag, "objects.json"));
     if (!res) return null;
     const parsed = await res.json<unknown>().catch(() => null);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -366,10 +415,10 @@ export class GitHubReleasesBucket implements R2Bucket {
 
   /**
    * Fetches a release asset through the Cache API. Returns null for a 404
-   * (cached for `missingTtl` seconds) and throws StorageError for any other
-   * failure, which must never be cached.
+   * (cached for MISSING_TTL) and throws StorageError for any other failure,
+   * which is never cached. Assets that exist are cached for IMMUTABLE_TTL.
    */
-  private async download(url: string, ttl: number, missingTtl: number): Promise<Response | null> {
+  private async download(url: string): Promise<Response | null> {
     const cache = defaultCache();
     if (cache) {
       const hit = await cache.match(url);
@@ -392,7 +441,7 @@ export class GitHubReleasesBucket implements R2Bucket {
         // Stored as a marked 200: negative entries survive any cache that
         // declines to store error statuses.
         this.store(cache, url, new Response(null, {
-          headers: { [MISSING_HEADER]: "1", "Cache-Control": `public, max-age=${missingTtl}` },
+          headers: { [MISSING_HEADER]: "1", "Cache-Control": `public, max-age=${MISSING_TTL}` },
         }));
       }
       return null;
@@ -404,10 +453,7 @@ export class GitHubReleasesBucket implements R2Bucket {
     if (!cache) return res;
 
     const stored = new Response(res.body, res);
-    stored.headers.set(
-      "Cache-Control",
-      ttl === IMMUTABLE_TTL ? `public, max-age=${ttl}, immutable` : `public, max-age=${ttl}`,
-    );
+    stored.headers.set("Cache-Control", `public, max-age=${IMMUTABLE_TTL}, immutable`);
     // Either would stop cache.put() storing the response.
     stored.headers.delete("Set-Cookie");
     stored.headers.delete("Vary");

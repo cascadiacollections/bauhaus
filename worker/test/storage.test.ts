@@ -4,9 +4,9 @@ import worker from "../src/index";
 import {
   assetUrl,
   GitHubReleasesBucket,
-  INDEX_MISSING_TTL,
-  INDEX_TTL,
   LATEST_CACHE,
+  LATEST_WINDOW_DAYS,
+  latestJson,
   locateKey,
   MISSING_TTL,
   StorageError,
@@ -123,7 +123,10 @@ function env() {
 }
 
 /** A fully published day, as the publisher's contract lays it out. */
-function day(date: string, opts: { avif?: boolean; webp?: boolean; sig?: boolean } = {}): [string, Release] {
+function day(
+  date: string,
+  opts: { avif?: boolean; webp?: boolean; sig?: boolean; dates?: string[] } = {},
+): [string, Release] {
   const p = date.replaceAll("-", "/");
   const assets: Record<string, string> = {
     "original.jpg": `original-${date}`,
@@ -132,6 +135,8 @@ function day(date: string, opts: { avif?: boolean; webp?: boolean; sig?: boolean
     "stylized.stripped.jpg": `stylized-stripped-${date}`,
     "metadata.json": JSON.stringify({ date, title: `Art ${date}`, artist: "A", generated_at: `${date}T04:00:00Z` }),
     "manifest.json": JSON.stringify({ date, sizes: [] }),
+    // Not listed in objects.json, per the contract.
+    "dates.json": JSON.stringify({ dates: opts.dates ?? [date] }),
   };
   const objects: Record<string, string> = {
     [`originals/${p}.jpg`]: "original.jpg",
@@ -156,16 +161,17 @@ function day(date: string, opts: { avif?: boolean; webp?: boolean; sig?: boolean
   return [`art-${date}`, { assets, objects }];
 }
 
-function index(dates: string[], latest = dates[0]): [string, Release] {
-  return [
-    "art-index",
-    {
-      assets: {
-        "dates.json": JSON.stringify({ dates }),
-        "latest.json": JSON.stringify({ date: latest }),
-      },
-    },
-  ];
+/** A clock fixed at noon UTC on `date`. */
+function at(date: string): () => Date {
+  return () => new Date(`${date}T12:00:00Z`);
+}
+
+function bucketAt(date: string, ctx?: ExecutionContext) {
+  return new GitHubReleasesBucket({ ASSETS_REPO: REPO }, ctx, at(date));
+}
+
+function urls(fetchMock: ReturnType<typeof stubFetch>): string[] {
+  return fetchMock.mock.calls.map(([u]) => String(u));
 }
 
 let cache: FakeCache;
@@ -199,12 +205,11 @@ describe("locateKey", () => {
     expect(locateKey(key)).toEqual({ kind: "day", date: "2026-11-08", tag });
   });
 
-  it("maps the index keys to the art-index release", () => {
-    expect(locateKey("latest.json")).toEqual({ kind: "index", asset: "latest.json" });
-    expect(locateKey("dates.json")).toEqual({ kind: "index", asset: "dates.json" });
+  it("maps latest.json to the synthesized pointer", () => {
+    expect(locateKey("latest.json")).toEqual({ kind: "latest" });
   });
 
-  it.each(["other/2026/11/08.jpg", "stylized/2026/11.jpg", "objects.json", "../latest.json"])(
+  it.each(["other/2026/11/08.jpg", "stylized/2026/11.jpg", "objects.json", "dates.json", "../latest.json"])(
     "rejects %s",
     (key) => {
       expect(locateKey(key)).toBeNull();
@@ -380,47 +385,132 @@ describe("head and get for day keys", () => {
   });
 });
 
-describe("latest.json and dates.json", () => {
-  it("serves latest.json with a sha256 etag of its bytes", async () => {
-    const files = await buildGitHub(Object.fromEntries([index(["2026-11-08"])]));
-    stubFetch(files);
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    const bytes = files.get(`${BASE}/art-index/latest.json`)!;
+describe("latest-date probe", () => {
+  const D = "2026-11-08";
+
+  it("finds today when today's release exists, with one fetch", async () => {
+    const fetchMock = stubFetch(await buildGitHub(Object.fromEntries([day(D), day("2026-11-07")])));
+    const obj = await bucketAt(D).get("latest.json");
+    expect(await obj!.json()).toEqual({ date: D });
+    expect(urls(fetchMock)).toEqual([`${BASE}/art-${D}/objects.json`]);
+  });
+
+  it("finds yesterday when today 404s, and stops at the first hit", async () => {
+    const fetchMock = stubFetch(
+      await buildGitHub(Object.fromEntries([day("2026-11-07"), day("2026-11-06"), day("2026-11-05")])),
+    );
+    const obj = await bucketAt(D).get("latest.json");
+    expect(await obj!.json()).toEqual({ date: "2026-11-07" });
+    expect(urls(fetchMock)).toEqual([
+      `${BASE}/art-2026-11-08/objects.json`,
+      `${BASE}/art-2026-11-07/objects.json`,
+    ]);
+  });
+
+  it("probes in UTC across a month boundary", async () => {
+    const fetchMock = stubFetch(await buildGitHub(Object.fromEntries([day("2026-10-30")])));
+    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO }, undefined, () => new Date("2026-11-01T00:30:00Z"));
+    expect(await (await bucket.get("latest.json"))!.json()).toEqual({ date: "2026-10-30" });
+    expect(urls(fetchMock)).toEqual([
+      `${BASE}/art-2026-11-01/objects.json`,
+      `${BASE}/art-2026-10-31/objects.json`,
+      `${BASE}/art-2026-10-30/objects.json`,
+    ]);
+  });
+
+  it(`finds a day ${LATEST_WINDOW_DAYS - 1} days back but not ${LATEST_WINDOW_DAYS}`, async () => {
+    stubFetch(await buildGitHub(Object.fromEntries([day("2026-10-26")])));
+    expect(await (await bucketAt(D).get("latest.json"))!.json()).toEqual({ date: "2026-10-26" });
+
+    cache = new FakeCache();
+    vi.stubGlobal("caches", { default: cache });
+    stubFetch(await buildGitHub(Object.fromEntries([day("2026-10-25")])));
+    expect(await bucketAt(D).get("latest.json")).toBeNull();
+  });
+
+  it("returns null and an empty list when the whole window is unpublished", async () => {
+    const fetchMock = stubFetch(new Map());
+    const bucket = bucketAt(D);
+    expect(await bucket.get("latest.json")).toBeNull();
+    expect(await bucket.head("latest.json")).toBeNull();
+    const page = await bucket.list({ prefix: "metadata/" });
+    expect(page.objects).toEqual([]);
+    expect(page.truncated).toBe(false);
+    expect(LATEST_WINDOW_DAYS).toBe(14);
+    expect(urls(fetchMock)).toHaveLength(LATEST_WINDOW_DAYS);
+    expect(urls(fetchMock).at(-1)).toBe(`${BASE}/art-2026-10-26/objects.json`);
+  });
+
+  it("throws StorageError on a non-404 failure instead of skipping the day", async () => {
+    vi.stubGlobal("caches", undefined);
+    stubFetch(await buildGitHub(Object.fromEntries([day("2026-11-06")])), {
+      [`${BASE}/art-2026-11-07/objects.json`]: 502,
+    });
+    await expect(bucketAt(D).get("latest.json")).rejects.toThrow(StorageError);
+    stubFetch(new Map(), { [`${BASE}/art-${D}/objects.json`]: "network" });
+    await expect(bucketAt(D).list({ prefix: "metadata/" })).rejects.toThrow(StorageError);
+  });
+
+  it("probes at most once per instance", async () => {
+    vi.stubGlobal("caches", undefined);
+    const fetchMock = stubFetch(await buildGitHub(Object.fromEntries([day("2026-11-06", { dates: ["2026-11-06"] })])));
+    const bucket = bucketAt(D);
+    await Promise.all([bucket.get("latest.json"), bucket.head("latest.json"), bucket.list({ prefix: "metadata/" })]);
+    await bucket.get("latest.json");
+    await bucket.list({ prefix: "metadata/" });
+    // Three objects.json probes and one dates.json, never repeated.
+    expect(urls(fetchMock)).toEqual([
+      `${BASE}/art-2026-11-08/objects.json`,
+      `${BASE}/art-2026-11-07/objects.json`,
+      `${BASE}/art-2026-11-06/objects.json`,
+      `${BASE}/art-2026-11-06/dates.json`,
+    ]);
+  });
+
+  it("reuses the probe's objects.json for the latest day's lookups", async () => {
+    vi.stubGlobal("caches", undefined);
+    const fetchMock = stubFetch(await buildGitHub(Object.fromEntries([day(D)])));
+    const bucket = bucketAt(D);
+    await bucket.get("latest.json");
+    await bucket.head("stylized/2026/11/08.avif");
+    expect(urls(fetchMock)).toEqual([`${BASE}/art-${D}/objects.json`]);
+  });
+});
+
+describe("synthesized latest.json", () => {
+  const D = "2026-11-08";
+
+  it("has json.dumps bytes and a sha256 etag of them", async () => {
+    stubFetch(await buildGitHub(Object.fromEntries([day(D)])));
+    const bytes = '{"date": "2026-11-08"}';
+    expect(latestJson(D)).toBe(bytes);
     const etag = await sha256Hex(bytes);
 
-    const obj = await bucket.get("latest.json");
+    const obj = await bucketAt(D).get("latest.json");
+    expect(await obj!.text()).toBe(bytes);
+    expect(obj!.key).toBe("latest.json");
     expect(obj!.etag).toBe(etag);
     expect(obj!.httpEtag).toBe(`"${etag}"`);
     expect(obj!.size).toBe(bytes.length);
     expect(obj!.httpMetadata).toEqual({ contentType: "application/json", cacheControl: LATEST_CACHE });
-    expect(await obj!.json()).toEqual({ date: "2026-11-08" });
 
-    const head = await bucket.head("latest.json");
+    const head = await bucketAt(D).head("latest.json");
     expect(head!.httpEtag).toBe(`"${etag}"`);
   });
 
   it("matches the publisher's LATEST_CACHE", () => {
     expect(LATEST_CACHE).toBe("public, max-age=300");
   });
-
-  it("returns null when latest.json is not published", async () => {
-    stubFetch(new Map());
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    expect(await bucket.get("latest.json")).toBeNull();
-  });
-
-  it("can read dates.json directly", async () => {
-    stubFetch(await buildGitHub(Object.fromEntries([index(["2026-11-08", "2026-11-07"])])));
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    expect(await (await bucket.get("dates.json"))!.json()).toEqual({ dates: ["2026-11-08", "2026-11-07"] });
-  });
 });
 
 describe("list", () => {
-  it("lists metadata keys from dates.json, ascending, in one page", async () => {
-    stubFetch(await buildGitHub(Object.fromEntries([index(["2026-11-08", "2025-12-31", "2026-01-01"])])));
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    const page = await bucket.list({ prefix: "metadata/" });
+  const D = "2026-11-08";
+
+  it("lists metadata keys from the latest day's dates.json, ascending, in one page", async () => {
+    const fetchMock = stubFetch(
+      await buildGitHub(Object.fromEntries([day(D, { dates: [D, "2026-01-01", "2025-12-31"] })])),
+    );
+    const page = await bucketAt(D).list({ prefix: "metadata/" });
     expect(page.objects.map((o) => o.key)).toEqual([
       "metadata/2025/12/31.json",
       "metadata/2026/01/01.json",
@@ -428,39 +518,50 @@ describe("list", () => {
     ]);
     expect(page.truncated).toBe(false);
     expect(page.delimitedPrefixes).toEqual([]);
+    expect(urls(fetchMock)).toEqual([`${BASE}/art-${D}/objects.json`, `${BASE}/art-${D}/dates.json`]);
+  });
+
+  it("reads the snapshot of the latest day, not an older one", async () => {
+    stubFetch(
+      await buildGitHub(
+        Object.fromEntries([
+          day("2026-11-07", { dates: ["2026-11-07", "2026-11-06"] }),
+          day("2026-11-06", { dates: ["2026-11-06"] }),
+        ]),
+      ),
+    );
+    const page = await bucketAt(D).list({ prefix: "metadata/" });
+    expect(page.objects.map((o) => o.key)).toEqual(["metadata/2026/11/06.json", "metadata/2026/11/07.json"]);
   });
 
   it("ignores the cursor and returns the same single page", async () => {
-    stubFetch(await buildGitHub(Object.fromEntries([index(["2026-11-08"])])));
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    const page = await bucket.list({ prefix: "metadata/", cursor: "anything" });
+    stubFetch(await buildGitHub(Object.fromEntries([day(D)])));
+    const page = await bucketAt(D).list({ prefix: "metadata/", cursor: "anything" });
     expect(page.objects.map((o) => o.key)).toEqual(["metadata/2026/11/08.json"]);
   });
 
   it("filters by prefix", async () => {
-    stubFetch(await buildGitHub(Object.fromEntries([index(["2026-11-08"])])));
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    expect((await bucket.list({ prefix: "stylized/" })).objects).toEqual([]);
-    expect((await bucket.list({ prefix: "metadata/2026/11/" })).objects).toHaveLength(1);
+    stubFetch(await buildGitHub(Object.fromEntries([day(D)])));
+    expect((await bucketAt(D).list({ prefix: "stylized/" })).objects).toEqual([]);
+    expect((await bucketAt(D).list({ prefix: "metadata/2026/11/" })).objects).toHaveLength(1);
   });
 
-  it("is empty when dates.json is not published", async () => {
-    stubFetch(new Map());
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO });
-    const page = await bucket.list({ prefix: "metadata/" });
-    expect(page.objects).toEqual([]);
-    expect(page.truncated).toBe(false);
+  it("falls back to the latest day alone when its dates.json is missing", async () => {
+    const files = await buildGitHub(Object.fromEntries([day(D)]));
+    files.delete(`${BASE}/art-${D}/dates.json`);
+    stubFetch(files);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const page = await bucketAt(D).list({ prefix: "metadata/" });
+    expect(page.objects.map((o) => o.key)).toEqual(["metadata/2026/11/08.json"]);
   });
 
-  it("throws StorageError when dates.json is malformed or GitHub fails", async () => {
-    stubFetch(new Map([[`${BASE}/art-index/dates.json`, JSON.stringify({ nope: 1 })]]));
-    await expect(new GitHubReleasesBucket({ ASSETS_REPO: REPO }).list({ prefix: "metadata/" })).rejects.toThrow(
-      StorageError,
-    );
-    stubFetch(new Map(), { [`${BASE}/art-index/dates.json`]: 500 });
-    await expect(new GitHubReleasesBucket({ ASSETS_REPO: REPO }).list({ prefix: "metadata/" })).rejects.toThrow(
-      StorageError,
-    );
+  it("throws StorageError when dates.json is malformed or fails upstream", async () => {
+    const files = await buildGitHub(Object.fromEntries([day(D)]));
+    files.set(`${BASE}/art-${D}/dates.json`, JSON.stringify({ nope: 1 }));
+    stubFetch(files);
+    await expect(bucketAt(D).list({ prefix: "metadata/" })).rejects.toThrow(StorageError);
+    stubFetch(files, { [`${BASE}/art-${D}/dates.json`]: 500 });
+    await expect(bucketAt(D).list({ prefix: "metadata/" })).rejects.toThrow(StorageError);
   });
 });
 
@@ -471,23 +572,33 @@ describe("list", () => {
 describe("caching", () => {
   const D = "2026-11-08";
 
-  it("caches day assets and objects.json for a year, index assets briefly", async () => {
-    stubFetch(await buildGitHub(Object.fromEntries([day(D), index([D])])));
+  it("caches every asset that exists for a year and probe misses for MISSING_TTL", async () => {
+    stubFetch(await buildGitHub(Object.fromEntries([day("2026-11-07")])));
     const { ctx, flush } = makeCtx();
-    const bucket = new GitHubReleasesBucket({ ASSETS_REPO: REPO }, ctx);
-    await (await bucket.get("stylized/2026/11/08.jpg"))!.text();
+    const bucket = bucketAt(D, ctx);
+    await (await bucket.get("stylized/2026/11/07.jpg"))!.text();
     await bucket.get("latest.json");
     await bucket.list({ prefix: "metadata/" });
     await flush();
 
     const byUrl = Object.fromEntries(cache.puts.map((p) => [p.url, p.cacheControl]));
     expect(byUrl).toEqual({
-      [`${BASE}/art-${D}/objects.json`]: "public, max-age=31536000, immutable",
-      [`${BASE}/art-${D}/stylized.jpg`]: "public, max-age=31536000, immutable",
-      [`${BASE}/art-index/latest.json`]: `public, max-age=${INDEX_TTL}`,
-      [`${BASE}/art-index/dates.json`]: `public, max-age=${INDEX_TTL}`,
+      [`${BASE}/art-2026-11-08/objects.json`]: `public, max-age=${MISSING_TTL}`,
+      [`${BASE}/art-2026-11-07/objects.json`]: "public, max-age=31536000, immutable",
+      [`${BASE}/art-2026-11-07/stylized.jpg`]: "public, max-age=31536000, immutable",
+      [`${BASE}/art-2026-11-07/dates.json`]: "public, max-age=31536000, immutable",
     });
-    expect(INDEX_TTL).toBeLessThanOrEqual(60);
+    expect(cache.puts.find((p) => p.url.includes("2026-11-08"))!.missing).toBe(true);
+  });
+
+  it("answers a warm probe from the cache without calling GitHub", async () => {
+    const fetchMock = stubFetch(await buildGitHub(Object.fromEntries([day("2026-11-07")])));
+    const first = makeCtx();
+    await bucketAt(D, first.ctx).get("latest.json");
+    await first.flush();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(await (await bucketAt(D).get("latest.json"))!.json()).toEqual({ date: "2026-11-07" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("answers repeat requests from the cache without calling GitHub", async () => {
@@ -527,17 +638,6 @@ describe("caching", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("caches a missing index asset for INDEX_MISSING_TTL", async () => {
-    stubFetch(new Map());
-    const { ctx, flush } = makeCtx();
-    await new GitHubReleasesBucket({ ASSETS_REPO: REPO }, ctx).get("latest.json");
-    await flush();
-    expect(cache.puts).toEqual([
-      { url: `${BASE}/art-index/latest.json`, cacheControl: `public, max-age=${INDEX_MISSING_TTL}`, missing: true },
-    ]);
-    expect(INDEX_MISSING_TTL).toBeLessThanOrEqual(60);
-  });
-
   it("never caches upstream errors", async () => {
     stubFetch(new Map(), { [`${BASE}/art-${D}/objects.json`]: 503 });
     const { ctx, flush } = makeCtx();
@@ -562,8 +662,14 @@ describe("routes over GitHub Releases", () => {
   const D = "2026-11-08";
   const PREV = "2026-11-07";
 
+  beforeEach(() => {
+    vi.useFakeTimers({ now: Date.parse(`${D}T12:00:00Z`), toFake: ["Date"] });
+  });
+
   async function setup(failures: Record<string, number | "network"> = {}) {
-    const files = await buildGitHub(Object.fromEntries([day(D, { sig: true }), day(PREV, { avif: false }), index([D, PREV])]));
+    const files = await buildGitHub(
+      Object.fromEntries([day(D, { sig: true, dates: [D, PREV] }), day(PREV, { avif: false, dates: [PREV] })]),
+    );
     const fetchMock = stubFetch(files, failures);
     return { files, fetchMock };
   }
@@ -645,6 +751,8 @@ describe("routes over GitHub Releases", () => {
 
   it("serves the archive and feed from dates.json", async () => {
     await setup();
+    const health = await worker.fetch(req("/api/health"), env());
+    expect(await health.json()).toEqual({ status: "ok", date: D, stale_days: 0 });
     const archive = await worker.fetch(req("/api/archive"), env());
     expect(await archive.json()).toEqual({ dates: [D, PREV], count: 2, total: 2 });
     const feed = await worker.fetch(req("/api/feed.atom"), env());
@@ -663,7 +771,7 @@ describe("routes over GitHub Releases", () => {
   });
 
   it("maps an upstream failure to the same 503 an R2 fault produced", async () => {
-    await setup({ [`${BASE}/art-index/latest.json`]: 500 });
+    await setup({ [`${BASE}/art-${D}/objects.json`]: 500 });
     vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await worker.fetch(req("/api/today"), env());
     expect(res.status).toBe(503);
