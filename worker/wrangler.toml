@@ -6,15 +6,15 @@ compatibility_flags = ["nodejs_compat"]
 # No [limits] block: cpu_ms caps CPU time per invocation, and this was set to
 # 1 — one millisecond — which arrived by way of a 1.25 truncated to satisfy the
 # integer schema rather than by any deliberate budget. Falling back to the
-# platform default is correct for a handler whose work is R2 reads.
+# platform default is correct for a handler whose work is storage reads.
 
 [observability.logs]
 enabled = true
 invocation_logs = true
 
-[[r2_buckets]]
-binding = "BUCKET"
-bucket_name = "bauhaus"
+# No [[r2_buckets]]: R2 is off on this account and Cloudflare rejects deploys
+# that bind it. Art is served from GitHub Releases on ASSETS_REPO instead (see
+# src/storage.ts).
 
 [[analytics_engine_datasets]]
 binding = "WEB_VITALS"
@@ -37,3 +37,5 @@ crons = ["30 11 * * *"]
 [vars]
 ALLOWED_ORIGINS = "https://kevintcoughlin.com,https://www.kevintcoughlin.com"
 HISTORY_REPO = "bauhaus-history"
+# Public repo whose releases (art-YYYY-MM-DD, art-index) hold the published art.
+ASSETS_REPO = "cascadiacollections/bauhaus"

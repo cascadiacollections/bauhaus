@@ -1,22 +1,22 @@
 /**
  * Daily Git history of published artwork, kept in a Cloudflare Artifacts repo.
  *
- * R2 holds the served objects; this commits each day's text records — metadata,
+ * Release assets (src/storage.ts) hold the served objects; this commits each day's text records — metadata,
  * its signature, and the responsive manifest — so the publish history can be
- * cloned, diffed, and audited with plain Git. Images stay in R2: Artifacts caps
+ * cloned, diffed, and audited with plain Git. Images stay in releases: Artifacts caps
  * a repo at 1 GB, which a year of stylized variants would approach.
  *
  * Kept inside Artifacts' included allowance (10k operations, 1 GB a month):
  * each commit message records the newest date it covers, so a run reads one
  * log entry and only looks at later dates. A day with nothing new costs one
- * log call and a few R2 reads; a day that records costs about eight Artifacts
+ * log call and a few storage reads; a day that records costs about eight Artifacts
  * operations. A failed run is caught up by the next, up to HISTORY_DAYS back.
  */
 
 import { commitFiles, readHead, type CommitResult } from "./git-commit";
+import { storageFor, type StorageEnv } from "./storage";
 
-export interface HistoryEnv {
-  BUCKET: R2Bucket;
+export interface HistoryEnv extends StorageEnv {
   HISTORY: Artifacts;
   HISTORY_REPO: string;
   HISTORY_DAYS?: string;
@@ -29,7 +29,7 @@ const AUTHOR = {
   email: "bauhaus@cascadiacollections.com",
 };
 
-/** R2 key → repository path for one date's text objects. */
+/** Storage (old R2) key → repository path for one date's text objects. */
 export function historyPaths(date: string): Array<[r2Key: string, repoPath: string]> {
   const path = date.replaceAll("-", "/");
   return [
@@ -67,6 +67,7 @@ export function historyDays(env: HistoryEnv): number {
 export async function recordHistory(
   env: HistoryEnv,
   now: Date,
+  bucket: R2Bucket = storageFor(env),
 ): Promise<CommitResult & { dates: string[] }> {
   const days = historyDays(env);
   using repo = await env.HISTORY.get(env.HISTORY_REPO);
@@ -78,7 +79,7 @@ export async function recordHistory(
   for (const date of datesToRecord(now, recordedThrough(head?.message), days)) {
     let found = false;
     for (const [key, path] of historyPaths(date)) {
-      const obj = await env.BUCKET.get(key);
+      const obj = await bucket.get(key);
       if (!obj) continue;
       files[path] = new Uint8Array(await obj.arrayBuffer());
       found = true;

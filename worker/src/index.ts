@@ -1,5 +1,8 @@
 /**
- * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork from R2.
+ * Bauhaus API — Cloudflare Worker serving stylized CC0 artwork.
+ *
+ * Storage is GitHub Releases on ASSETS_REPO, read through an R2Bucket-shaped
+ * adapter (src/storage.ts), so the routes below still speak the R2 API.
  *
  * Routes:
  *   GET|HEAD /api/today               → today's stylized image
@@ -37,9 +40,9 @@ import {
   type FeedMetadata,
 } from "./feed";
 import { recordHistory, type HistoryEnv } from "./history";
+import { storageFor, type StorageEnv } from "./storage";
 
-interface Env {
-  BUCKET: R2Bucket;
+interface Env extends StorageEnv {
   WEB_VITALS: AnalyticsEngineDataset;
   WEB_ERRORS: AnalyticsEngineDataset;
   ALLOWED_ORIGINS: string;
@@ -816,13 +819,13 @@ function unavailable(msg: string): Response {
 class NoLatestError extends Error {}
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    // Without this, an R2 fault or a missing latest.json escapes as a bare 500
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    // Without this, a storage fault or a missing latest.json escapes as a bare 500
     // carrying no CORS headers, so browsers see an opaque CORS failure rather
     // than the JSON error every other path returns — precisely when the API is
     // already unhealthy.
     try {
-      return await handle(request, env);
+      return await handle(request, env, ctx);
     } catch (err) {
       if (err instanceof NoLatestError) {
         return notFound("No artwork published yet");
@@ -836,7 +839,7 @@ export default {
     // A rejection here marks the invocation failed in the dashboard and
     // `wrangler tail`; the next run retries the same window.
     ctx.waitUntil(
-      recordHistory(env, new Date(controller.scheduledTime)).then((r) => {
+      recordHistory(env, new Date(controller.scheduledTime), storageFor(env, ctx)).then((r) => {
         console.log(
           r.commit
             ? `history: committed ${r.commit} (${r.dates.join(", ")})`
@@ -847,7 +850,7 @@ export default {
   },
 };
 
-async function handle(request: Request, env: Env): Promise<Response> {
+async function handle(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
     const progressive = isProgressive(url);
@@ -868,6 +871,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
       return errorResponse(405, "Method not allowed");
     }
 
+    // Construction throws on a bad ASSETS_REPO; that lands in fetch()'s catch
+    // as a 503, like any other storage fault.
+    const bucket = storageFor(env, ctx);
+
     // GET /api/health → publish freshness, for an external uptime monitor.
     //
     // The failure mode with no signal at all is the cron simply not running:
@@ -878,7 +885,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (path === "/api/health") {
       let today: string;
       try {
-        today = await getToday(env.BUCKET);
+        today = await getToday(bucket);
       } catch (err) {
         // Never published, or R2 is down — either way this probe must report
         // unhealthy rather than the 404 the generic handler would produce.
@@ -908,12 +915,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
     // GET|HEAD /api/archive → the dates that have published artwork
     if (path === "/api/archive") {
-      return serveArchive(env.BUCKET, url, isHead);
+      return serveArchive(bucket, url, isHead);
     }
 
     // GET|HEAD /api/feed.atom → Atom feed of the newest artwork
     if (path === "/api/feed.atom") {
-      return serveFeed(request, env.BUCKET, url, isHead);
+      return serveFeed(request, bucket, url, isHead);
     }
 
     if (hasInvalidFormat(url)) {
@@ -924,26 +931,26 @@ async function handle(request: Request, env: Env): Promise<Response> {
 
     // GET|HEAD /api/today → stylized image
     if (path === "/api/today") {
-      const today = await getToday(env.BUCKET);
-      return serveImage(request, env.BUCKET, `stylized/${datePath(today)}`, format, progressive, strip, true, "No image for today", isHead);
+      const today = await getToday(bucket);
+      return serveImage(request, bucket, `stylized/${datePath(today)}`, format, progressive, strip, true, "No image for today", isHead);
     }
 
     // GET|HEAD /api/today.json → metadata
     if (path === "/api/today.json") {
-      const today = await getToday(env.BUCKET);
-      return serveJson(request, env.BUCKET, `metadata/${datePath(today)}.json`, true, "No metadata for today", isHead);
+      const today = await getToday(bucket);
+      return serveJson(request, bucket, `metadata/${datePath(today)}.json`, true, "No metadata for today", isHead);
     }
 
     // GET|HEAD /api/today.manifest.json → responsive manifest
     if (path === "/api/today.manifest.json") {
-      const today = await getToday(env.BUCKET);
-      return serveJson(request, env.BUCKET, `manifests/${datePath(today)}.json`, true, "No manifest for today", isHead);
+      const today = await getToday(bucket);
+      return serveJson(request, bucket, `manifests/${datePath(today)}.json`, true, "No manifest for today", isHead);
     }
 
     // GET|HEAD /api/:date.manifest.json → responsive manifest for date
     const manifestMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.manifest\.json$/);
     if (manifestMatch) {
-      return serveJson(request, env.BUCKET, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`, isHead);
+      return serveJson(request, bucket, `manifests/${datePath(manifestMatch[1])}.json`, false, `No manifest for ${manifestMatch[1]}`, isHead);
     }
 
     // GET|HEAD /api/:date.json.sig → detached PGP signature over the metadata
@@ -955,7 +962,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (sigMatch) {
       return serveBinary(
         request,
-        env.BUCKET,
+        bucket,
         `metadata/${datePath(sigMatch[1])}.json.sig`,
         "application/pgp-signature",
         `No signature for ${sigMatch[1]}`,
@@ -966,19 +973,19 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // GET|HEAD /api/:date.json → metadata for date
     const jsonMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\.json$/);
     if (jsonMatch) {
-      return serveJson(request, env.BUCKET, `metadata/${datePath(jsonMatch[1])}.json`, false, `No metadata for ${jsonMatch[1]}`, isHead);
+      return serveJson(request, bucket, `metadata/${datePath(jsonMatch[1])}.json`, false, `No metadata for ${jsonMatch[1]}`, isHead);
     }
 
     // GET|HEAD /api/:date/original → original image
     const origMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})\/original$/);
     if (origMatch) {
-      return serveImage(request, env.BUCKET, `originals/${datePath(origMatch[1])}`, format, progressive, strip, false, `No original for ${origMatch[1]}`, isHead);
+      return serveImage(request, bucket, `originals/${datePath(origMatch[1])}`, format, progressive, strip, false, `No original for ${origMatch[1]}`, isHead);
     }
 
     // GET|HEAD /api/:date → stylized image for date
     const dateMatch = path.match(/^\/api\/(\d{4}-\d{2}-\d{2})$/);
     if (dateMatch) {
-      return serveImage(request, env.BUCKET, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`, isHead);
+      return serveImage(request, bucket, `stylized/${datePath(dateMatch[1])}`, format, progressive, strip, false, `No image for ${dateMatch[1]}`, isHead);
     }
 
     return notFound("Not found. Try /api/today, /api/YYYY-MM-DD, /api/archive, or /api/feed.atom");
