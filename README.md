@@ -63,7 +63,7 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT; retried at 10 AM UTC)
   6. Publish original + stylized (JPEG/AVIF/WebP) + metadata as a GitHub
      release (tag art-YYYY-MM-DD), then update the art-index release
          |
-  CF Worker API <-- R2 bucket
+  CF Worker API <-- GitHub release assets (edge-cached)
     GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
     GET /api/today.json -> metadata
     GET /api/:date      -> archive
@@ -74,7 +74,7 @@ Runs daily via GitHub Actions. Total cost: **$0/month**.
 
 | Component | Monthly cost |
 |-----------|-------------|
-| Cloudflare R2 (10 GB free) | $0 |
+| GitHub Releases (art storage; R2 was turned off in November 2026) | $0 |
 | Cloudflare Workers (100k req/day free) | $0 |
 | Cloudflare Artifacts (10k ops + 1 GB/month included with Workers Paid) | $0 — about 8 ops a day, ~2 KB a day |
 | GitHub Actions (public repo) | $0 |
@@ -107,7 +107,7 @@ All `GET` endpoints also support `HEAD` — returns the same response headers (i
 |-----------------|----------------|
 | `/api/today*` | `public, max-age=300, s-maxage=3600, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; the edge TTL stays below the 24h publish interval so a PoP cannot serve yesterday's artwork past the next run |
 | `/api/archive` | Same as `/api/today*` — the index gains an entry every morning, so it cannot be immutable |
-| `/api/feed.atom` | `public, max-age=3600` with a strong `ETag` and `Last-Modified`; conditional requests get a `304` from the R2 listing alone |
+| `/api/feed.atom` | `public, max-age=3600` with a strong `ETag` and `Last-Modified`; conditional requests get a `304` from the `dates.json` index alone |
 | `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed. The check runs twice, once before the fetch so a collision costs nothing and once immediately before the first upload, which is the one that closes the race |
 
 ### Archive index
@@ -146,7 +146,7 @@ round-trip cap and `total` counts only what was walked.
 A daily cron in the Worker commits each newly published day's
 `metadata.json`, `manifest.json` and (when signing is on) `metadata.json.sig`
 to the `bauhaus-history` repo in Cloudflare Artifacts, under `YYYY/MM/DD/`.
-Images stay in R2. Clone it with any Git client and a repo token, then
+Images stay in the GitHub releases. Clone it with any Git client and a repo token, then
 `git log -p` shows exactly what was published and when. Each commit message
 names the newest date it records, so a run only reads one log entry plus the
 days after it, and a missed day is caught up by the next run (up to
