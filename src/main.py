@@ -1,4 +1,4 @@
-"""Orchestrator: fetch CC0 art → apply AdaIN style transfer → upload to R2."""
+"""Orchestrator: fetch CC0 art → apply AdaIN style transfer → publish to GitHub Releases."""
 
 import argparse
 import json
@@ -306,7 +306,7 @@ def ensure_models():
 def _exit_already_published(
     exc: AlreadyPublishedError, today: date, skip_if_published: bool,
 ) -> NoReturn:
-    """Terminate a run whose date is already in R2.
+    """Terminate a run whose date is already published.
 
     A scheduled run that finds the date published has nothing to do and nothing
     to report: the day's art exists, which is the whole outcome the schedule
@@ -338,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Create the CLI parser with backwards-compatible boolean flags."""
     parser = argparse.ArgumentParser(description="Generate daily stylized artwork")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Fetch and stylize locally, skip R2 upload")
+                        help="Fetch and stylize locally, skip publishing")
     # Default to a CC0 museum source: it needs no API key, so `just generate`
     # works on a fresh clone, and it matches what both generate workflows run.
     parser.add_argument("--source", default="met", choices=["unsplash", "met", "artic"],
@@ -347,8 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
     # the other stands down for it. Passing both is an operator error.
     published = parser.add_mutually_exclusive_group()
     published.add_argument("--overwrite", action="store_true",
-                           help="Republish a date that already exists in R2 "
-                                "(date keys are served immutable — see docs)")
+                           help="Republish a date that already has a release "
+                                "(dates are served immutable — see docs)")
     published.add_argument("--skip-if-published", action="store_true",
                            help="Exit 0 without generating when the date is already "
                                 "published, instead of failing. For scheduled runs, "
@@ -703,9 +703,9 @@ def main():
         )
         return
 
-    # 7. Upload to R2
+    # 7. Publish as a GitHub release
     t = time.perf_counter()
-    print("Uploading to R2...")
+    print("Publishing to GitHub Releases...")
     try:
         keys = upload(
             original_bytes, stylized_bytes, prepared_metadata,

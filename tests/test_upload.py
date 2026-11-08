@@ -1,20 +1,26 @@
-"""Tests for upload.py — key generation, metadata enrichment, and S3 calls."""
+"""Tests for upload.py — GitHub Releases layout, ordering, and the write-once guard.
 
+Every test drives the real GitHubReleases client against FakeGitHub (an
+in-memory GitHub REST API), so URL building, pagination, retries and status
+handling are exercised, not mocked away.
+"""
+
+import hashlib
 import json
-import os
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from botocore.exceptions import ClientError
-from helpers import make_r2_client
+from helpers import FakeGitHub, FakeResponse, make_github_client
 
+import upload as upload_mod
 from upload import (
     IMMUTABLE_CACHE,
     LATEST_CACHE,
     AlreadyPublishedError,
+    GitHubAPIError,
     assert_unpublished,
     prepare_metadata_for_upload,
     serialize_metadata,
@@ -22,459 +28,438 @@ from upload import (
     utc_today,
 )
 
+DAY = date(2026, 1, 2)
+TAG = "art-2026-01-02"
 
-class TestUpload:
-    def _run_upload(
-        self,
-        today: date | None = None,
-        manifest: dict | None = None,
-        variants: dict[str, bytes] | None = None,
-        stripped_bytes: bytes | None = None,
-    ):
-        today = today or date(2025, 7, 14)
-        mock_client = make_r2_client()
+_VARIANTS = {
+    "avif": b"avif-data",
+    "webp": b"webp-data",
+    "progressive.jpg": b"progressive-data",
+    "stripped.jpg": b"variant-stripped",
+}
 
-        with patch("upload._get_client", return_value=mock_client):
-            keys = upload(
-                original_bytes=b"original-data",
-                stylized_bytes=b"stylized-data",
-                metadata={"title": "Test Art", "artist": "Test Artist"},
-                manifest=manifest,
-                bucket="test-bucket",
-                today=today,
-                variants=variants,
-                stripped_bytes=stripped_bytes,
-            )
-        return keys, mock_client
 
-    def test_date_path_formatting(self):
-        keys, _ = self._run_upload(date(2025, 7, 4))
-        assert keys["original"] == "originals/2025/07/04.jpg"
-        assert keys["stylized"] == "stylized/2025/07/04.jpg"
-        assert keys["metadata"] == "metadata/2025/07/04.json"
+@pytest.fixture(autouse=True)
+def _no_sleep(monkeypatch):
+    monkeypatch.setattr(upload_mod, "_sleep", lambda _s: None)
 
-    def test_key_structure(self):
-        keys, _ = self._run_upload(date(2025, 12, 25))
-        assert keys["original"] == "originals/2025/12/25.jpg"
-        assert keys["stylized"] == "stylized/2025/12/25.jpg"
-        assert keys["metadata"] == "metadata/2025/12/25.json"
+
+@pytest.fixture
+def fake() -> FakeGitHub:
+    return FakeGitHub()
+
+
+def _patched(fake: FakeGitHub):
+    client = make_github_client(fake)
+    return patch("upload._get_client", side_effect=lambda repo=None: client)
+
+
+def run_upload(fake: FakeGitHub, today: date = DAY, **kwargs) -> dict[str, str]:
+    kwargs.setdefault("metadata", {"title": "Test Art", "artist": "Test Artist"})
+    original = kwargs.pop("original_bytes", b"original-data")
+    stylized = kwargs.pop("stylized_bytes", b"stylized-data")
+    with _patched(fake):
+        return upload(original_bytes=original, stylized_bytes=stylized, today=today, **kwargs)
+
+
+def full_upload(fake: FakeGitHub, today: date = DAY, **kwargs) -> dict[str, str]:
+    return run_upload(
+        fake, today,
+        variants=dict(_VARIANTS),
+        stripped_bytes=b"explicit-stripped",
+        manifest={"date": today.isoformat(), "variants": []},
+        metadata_sig=b"-----BEGIN PGP SIGNATURE-----\nfake\n",
+        **kwargs,
+    )
+
+
+def objects_json(fake: FakeGitHub, tag: str = TAG) -> dict:
+    return json.loads(fake.files(tag)["objects.json"])
+
+
+class TestAssetMapping:
+    def test_every_key_maps_to_its_flat_asset_name(self, fake):
+        full_upload(fake)
+        assert {k: v["asset"] for k, v in objects_json(fake).items()} == {
+            "originals/2026/01/02.jpg": "original.jpg",
+            "stylized/2026/01/02.jpg": "stylized.jpg",
+            "stylized/2026/01/02.avif": "stylized.avif",
+            "stylized/2026/01/02.webp": "stylized.webp",
+            "stylized/2026/01/02.progressive.jpg": "stylized.progressive.jpg",
+            "stylized/2026/01/02.stripped.jpg": "stylized.stripped.jpg",
+            "metadata/2026/01/02.json": "metadata.json",
+            "metadata/2026/01/02.json.sig": "metadata.json.sig",
+            "manifests/2026/01/02.json": "manifest.json",
+        }
+
+    def test_release_assets_are_exactly_the_mapped_files_plus_objects(self, fake):
+        full_upload(fake)
+        names = set(fake.files(TAG))
+        assert names == {v["asset"] for v in objects_json(fake).values()} | {"objects.json"}
+
+    def test_returned_keys_are_the_legacy_keys(self, fake):
+        keys = full_upload(fake)
+        assert keys["original"] == "originals/2026/01/02.jpg"
+        assert keys["stylized"] == "stylized/2026/01/02.jpg"
+        assert keys["stylized_avif"] == "stylized/2026/01/02.avif"
+        assert keys["stylized_progressive_jpg"] == "stylized/2026/01/02.progressive.jpg"
+        assert keys["metadata"] == "metadata/2026/01/02.json"
+        assert keys["metadata_sig"] == "metadata/2026/01/02.json.sig"
+        assert keys["manifest"] == "manifests/2026/01/02.json"
+        assert keys["stripped"] == "stylized/2026/01/02.stripped.jpg"
         assert keys["latest"] == "latest.json"
 
-    def test_put_object_call_count(self):
-        _, mock_client = self._run_upload()
-        assert mock_client.put_object.call_count == 4
+    def test_date_path_formatting(self, fake):
+        keys = run_upload(fake, date(2025, 12, 25))
+        assert keys["original"] == "originals/2025/12/25.jpg"
+        assert "metadata/2025/12/25.json" in objects_json(fake, "art-2025-12-25")
 
-    def test_metadata_includes_date_and_generated_at(self):
-        _, mock_client = self._run_upload(date(2025, 7, 14))
-        # Find the metadata put_object call (3rd call, 0-indexed=2)
-        calls = mock_client.put_object.call_args_list
-        metadata_call = calls[2]
-        body = json.loads(metadata_call.kwargs["Body"])
-        assert body["date"] == "2025-07-14"
+    def test_minimal_upload(self, fake):
+        keys = run_upload(fake)
+        assert set(fake.files(TAG)) == {"original.jpg", "stylized.jpg", "metadata.json", "objects.json"}
+        assert "manifest" not in keys and "metadata_sig" not in keys and "stripped" not in keys
+
+    def test_content_types(self, fake):
+        full_upload(fake)
+        assert fake.content_types(TAG) == {
+            "original.jpg": "image/jpeg",
+            "stylized.jpg": "image/jpeg",
+            "stylized.avif": "image/avif",
+            "stylized.webp": "image/webp",
+            "stylized.progressive.jpg": "image/jpeg",
+            "stylized.stripped.jpg": "image/jpeg",
+            "metadata.json": "application/json",
+            "metadata.json.sig": "application/pgp-signature",
+            "manifest.json": "application/json",
+            "objects.json": "application/json",
+        }
+
+    def test_release_shape(self, fake):
+        run_upload(fake)
+        release = fake.release_by_tag(TAG)
+        assert release is not None
+        assert release["name"] == "Bauhaus 2026-01-02"
+        assert release["prerelease"] is True
+        assert release["make_latest"] == "false"
+        assert release["target_commitish"] == "main"
+        assert release["body"] == "Test Art — Test Artist"
+
+
+class TestBytes:
+    def test_metadata_bytes_match_canonical_serialization(self, fake):
+        prepared = prepare_metadata_for_upload(
+            {"title": "Test Art", "artist": "Test Artist"},
+            today=DAY, generated_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        run_upload(fake, metadata=prepared, metadata_sig=b"fakesig")
+        assert fake.files(TAG)["metadata.json"] == serialize_metadata(prepared)
+
+    def test_metadata_includes_date_and_generated_at(self, fake):
+        run_upload(fake)
+        body = json.loads(fake.files(TAG)["metadata.json"])
+        assert body["date"] == "2026-01-02"
+        assert body["published_date"] == "2026-01-02"
         assert "generated_at" in body
 
-    def test_latest_json_content(self):
-        _, mock_client = self._run_upload(date(2025, 7, 14))
-        calls = mock_client.put_object.call_args_list
-        latest_call = calls[3]
-        body = json.loads(latest_call.kwargs["Body"])
-        assert body == {"date": "2025-07-14"}
+    def test_signature_uploaded_verbatim(self, fake):
+        sig = b"-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n"
+        run_upload(fake, metadata_sig=sig)
+        assert fake.files(TAG)["metadata.json.sig"] == sig
 
-    # --- Variant upload tests ---
+    def test_manifest_serialization(self, fake):
+        manifest = {"date": "2026-01-02", "variants": [{"w": 1}]}
+        run_upload(fake, manifest=manifest)
+        assert fake.files(TAG)["manifest.json"] == json.dumps(manifest, indent=2).encode()
 
-    def test_variant_keys_uploaded(self):
-        variants = {"avif": b"avif-data", "webp": b"webp-data"}
-        keys, _ = self._run_upload(date(2025, 7, 14), variants=variants)
-        assert keys["stylized_avif"] == "stylized/2025/07/14.avif"
-        assert keys["stylized_webp"] == "stylized/2025/07/14.webp"
+    def test_explicit_stripped_bytes_win_and_upload_once(self, fake):
+        full_upload(fake)
+        assert fake.files(TAG)["stylized.stripped.jpg"] == b"explicit-stripped"
+        uploads = [name for op, _, name in fake.log if op == "upload"]
+        assert len(uploads) == len(set(uploads))
 
-    def test_variant_put_object_count(self):
-        variants = {"avif": b"avif-data", "webp": b"webp-data"}
-        _, mock_client = self._run_upload(variants=variants)
-        # 4 base calls + 2 variant calls = 6
-        assert mock_client.put_object.call_count == 6
-
-    def test_variant_content_types(self):
-        variants = {"avif": b"avif-data", "webp": b"webp-data"}
-        _, mock_client = self._run_upload(variants=variants)
-        calls = mock_client.put_object.call_args_list
-        # Variants are uploaded after stylized JPEG (index 1) and before metadata (index 4+)
-        variant_calls = {
-            c.kwargs["Key"]: c.kwargs["ContentType"]
-            for c in calls
-            if ".avif" in c.kwargs.get("Key", "") or ".webp" in c.kwargs.get("Key", "")
-        }
-        assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
-        assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
-
-    def test_no_variants_no_extra_calls(self):
-        _, mock_client = self._run_upload(variants=None)
-        assert mock_client.put_object.call_count == 4
-
-    def test_empty_variants_no_extra_calls(self):
-        _, mock_client = self._run_upload(variants={})
-        assert mock_client.put_object.call_count == 4
-
-    def test_single_variant_webp_only(self):
-        variants = {"webp": b"webp-data"}
-        keys, mock_client = self._run_upload(variants=variants)
-        assert "stylized_webp" in keys
-        assert "stylized_avif" not in keys
-        assert mock_client.put_object.call_count == 5
-
-    def test_stripped_variant_not_uploaded_when_none(self):
-        keys, mock_client = self._run_upload()
-        assert "stripped" not in keys
-        assert mock_client.put_object.call_count == 4
-
-    def test_stripped_variant_uploaded_when_provided(self):
-        keys, mock_client = self._run_upload(
-            date(2025, 7, 14), stripped_bytes=b"stripped-data",
-        )
-        assert "stripped" in keys
-        assert keys["stripped"] == "stylized/2025/07/14.stripped.jpg"
-        assert mock_client.put_object.call_count == 5
-
-    def test_stripped_variant_key_formatting(self):
-        keys, _ = self._run_upload(
-            date(2025, 12, 25), stripped_bytes=b"stripped-data",
-        )
-        assert keys["stripped"] == "stylized/2025/12/25.stripped.jpg"
+    def test_variant_stripped_used_when_no_explicit_bytes(self, fake):
+        run_upload(fake, variants=dict(_VARIANTS))
+        assert fake.files(TAG)["stylized.stripped.jpg"] == b"variant-stripped"
 
 
-class TestUploadVariants:
-    """Tests for variant and manifest upload."""
+class TestObjectsJson:
+    def test_entries_describe_the_uploaded_bytes(self, fake):
+        full_upload(fake)
+        files = fake.files(TAG)
+        types = fake.content_types(TAG)
+        for key, entry in objects_json(fake).items():
+            data = files[entry["asset"]]
+            assert entry["etag"] == hashlib.sha256(data).hexdigest(), key
+            assert re.fullmatch(r"[0-9a-f]{64}", entry["etag"])
+            assert entry["size"] == len(data)
+            assert entry["contentType"] == types[entry["asset"]]
+            assert entry["cacheControl"] == IMMUTABLE_CACHE
+            offset = datetime.fromisoformat(entry["uploaded"]).utcoffset()
+            assert offset is not None and offset.total_seconds() == 0
 
-    def _run_upload(self, variants=None, manifest=None, today=None):
-        today = today or date(2025, 7, 14)
-        mock_client = make_r2_client()
-        with patch("upload._get_client", return_value=mock_client):
-            keys = upload(
-                original_bytes=b"original-data",
-                stylized_bytes=b"stylized-data",
-                metadata={"title": "Test Art", "artist": "Test Artist"},
-                bucket="test-bucket",
-                today=today,
-                variants=variants,
-                manifest=manifest,
-            )
-        return keys, mock_client
+    def test_objects_json_is_not_listed_in_itself(self, fake):
+        full_upload(fake)
+        assert all(e["asset"] != "objects.json" for e in objects_json(fake).values())
 
-    def test_upload_with_variants(self):
-        variants = {"avif": b"avif-data", "webp": b"webp-data"}
-        keys, mock_client = self._run_upload(variants=variants)
-        # 4 base (original, stylized, metadata, latest) + 2 variants = 6
-        assert mock_client.put_object.call_count == 6
-        assert "stylized_avif" in keys
-        assert "stylized_webp" in keys
-
-    def test_variant_keys_use_date_path(self):
-        variants = {"avif": b"avif-data"}
-        keys, _ = self._run_upload(variants=variants, today=date(2025, 12, 25))
-        assert keys["stylized_avif"] == "stylized/2025/12/25.avif"
-
-    def test_variant_content_types(self):
-        variants = {"avif": b"a", "webp": b"w", "progressive.jpg": b"p", "stripped.jpg": b"s"}
-        _, mock_client = self._run_upload(variants=variants)
-        calls = mock_client.put_object.call_args_list
-        variant_calls = {
-            c.kwargs["Key"]: c.kwargs["ContentType"]
-            for c in calls
-            if "stylized/" in c.kwargs.get("Key", "")
-            and c.kwargs["Key"] != "stylized/2025/07/14.jpg"
-        }
-        assert variant_calls["stylized/2025/07/14.avif"] == "image/avif"
-        assert variant_calls["stylized/2025/07/14.webp"] == "image/webp"
-        assert variant_calls["stylized/2025/07/14.progressive.jpg"] == "image/jpeg"
-        assert variant_calls["stylized/2025/07/14.stripped.jpg"] == "image/jpeg"
-
-    def test_upload_with_manifest(self):
-        manifest = {"date": "2025-07-14", "variants": []}
-        keys, mock_client = self._run_upload(manifest=manifest)
-        # 4 base + 1 manifest = 5
-        assert mock_client.put_object.call_count == 5
-        assert keys["manifest"] == "manifests/2025/07/14.json"
-
-    def test_upload_without_variants_unchanged(self):
-        """Without variants/manifest, upload behaviour matches the original."""
-        keys, mock_client = self._run_upload()
-        assert mock_client.put_object.call_count == 4
-        assert "stylized_avif" not in keys
-        assert "manifest" not in keys
+    def test_objects_json_uploaded_last_in_the_day_release(self, fake):
+        full_upload(fake)
+        day_uploads = [name for op, tag, name in fake.log if op == "upload" and tag == TAG]
+        assert day_uploads[-1] == "objects.json"
+        assert len(day_uploads) == len(fake.files(TAG))
 
 
-class TestUploadMetadataSig:
-    """Tests for the metadata_sig parameter in upload()."""
+class TestIndex:
+    def test_creates_index_release_with_dates_and_latest(self, fake):
+        run_upload(fake)
+        index = fake.release_by_tag("art-index")
+        assert index is not None
+        assert index["name"] == "Bauhaus index"
+        assert index["prerelease"] is True
+        assert index["make_latest"] == "false"
+        files = fake.files("art-index")
+        assert json.loads(files["dates.json"]) == {"dates": ["2026-01-02"]}
+        assert fake.content_types("art-index")["latest.json"] == "application/json"
 
-    def _run_upload(self, metadata_sig=None, today=None):
-        from datetime import date
-        today = today or date(2025, 7, 14)
-        mock_client = make_r2_client()
-        with patch("upload._get_client", return_value=mock_client):
-            keys = upload(
-                original_bytes=b"original-data",
-                stylized_bytes=b"stylized-data",
-                metadata={"title": "Test Art"},
-                bucket="test-bucket",
-                today=today,
-                metadata_sig=metadata_sig,
-            )
-        return keys, mock_client
+    def test_latest_json_bytes_match_the_old_r2_pointer(self, fake):
+        run_upload(fake)
+        assert fake.files("art-index")["latest.json"] == json.dumps({"date": "2026-01-02"}).encode()
+        assert fake.files("art-index")["latest.json"] == b'{"date": "2026-01-02"}'
 
-    def test_no_sig_no_extra_call(self):
-        """Without metadata_sig, call count stays at 4."""
-        keys, mock_client = self._run_upload()
-        assert mock_client.put_object.call_count == 4
-        assert "metadata_sig" not in keys
+    def test_dates_json_updated_sorted_descending_and_deduplicated(self, fake):
+        index = fake.add_release("art-index", name="Bauhaus index")
+        existing = {"dates": ["2026-01-01", "2025-12-31", "2026-01-03", "2026-01-01"]}
+        fake.add_asset(index, "dates.json", json.dumps(existing).encode())
+        fake.add_asset(index, "latest.json", b'{"date": "2026-01-03"}')
+        run_upload(fake)
+        files = fake.files("art-index")
+        assert json.loads(files["dates.json"])["dates"] == [
+            "2026-01-03", "2026-01-02", "2026-01-01", "2025-12-31",
+        ]
+        assert files["latest.json"] == b'{"date": "2026-01-02"}'
 
-    def test_sig_uploaded_when_provided(self):
-        """Providing metadata_sig should add one extra put_object call."""
-        sig_bytes = b"fakesig"
-        keys, mock_client = self._run_upload(metadata_sig=sig_bytes)
-        assert mock_client.put_object.call_count == 5
-        assert keys["metadata_sig"] == "metadata/2025/07/14.json.sig"
+    def test_already_listed_date_is_not_duplicated(self, fake):
+        index = fake.add_release("art-index")
+        fake.add_asset(index, "dates.json", json.dumps({"dates": ["2026-01-02"]}).encode())
+        run_upload(fake)
+        assert json.loads(fake.files("art-index")["dates.json"]) == {"dates": ["2026-01-02"]}
 
-    def test_sig_key_date_formatting(self):
-        """Signature key should use the same date path as the metadata JSON."""
-        from datetime import date
-        sig_bytes = b"fakesig"
-        keys, _ = self._run_upload(metadata_sig=sig_bytes, today=date(2025, 12, 25))
-        assert keys["metadata_sig"] == "metadata/2025/12/25.json.sig"
+    def test_index_assets_replaced_by_delete_then_upload(self, fake):
+        index = fake.add_release("art-index")
+        fake.add_asset(index, "dates.json", b'{"dates": ["2026-01-01"]}')
+        fake.add_asset(index, "latest.json", b'{"date": "2026-01-01"}')
+        run_upload(fake)
+        index_ops = [(op, name) for op, tag, name in fake.log if tag == "art-index"]
+        assert index_ops == [
+            ("delete_asset", "dates.json"),
+            ("upload", "dates.json"),
+            ("delete_asset", "latest.json"),
+            ("upload", "latest.json"),
+        ]
+        assert sorted(fake.files("art-index")) == ["dates.json", "latest.json"]
 
-    def test_sig_content_type(self):
-        """Signature object should use application/pgp-signature content type."""
-        sig_bytes = b"fakesig"
-        _, mock_client = self._run_upload(metadata_sig=sig_bytes)
-        calls = mock_client.put_object.call_args_list
-        sig_call = next(
-            c for c in calls if c.kwargs.get("Key", "").endswith(".json.sig")
-        )
-        assert sig_call.kwargs["ContentType"] == "application/pgp-signature"
+    def test_order_day_release_then_dates_then_latest(self, fake):
+        full_upload(fake)
+        sequence = list(fake.log)
+        objects_at = sequence.index(("upload", TAG, "objects.json"))
+        dates_at = sequence.index(("upload", "art-index", "dates.json"))
+        latest_at = sequence.index(("upload", "art-index", "latest.json"))
+        assert objects_at < dates_at < latest_at
+        assert all(tag != "art-index" for _, tag, _ in sequence[:objects_at + 1])
 
-    def test_sig_body_matches_input(self):
-        """The bytes passed as metadata_sig should be uploaded verbatim."""
-        sig_bytes = b"-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n"
-        _, mock_client = self._run_upload(metadata_sig=sig_bytes)
-        calls = mock_client.put_object.call_args_list
-        sig_call = next(
-            c for c in calls if c.kwargs.get("Key", "").endswith(".json.sig")
-        )
-        assert sig_call.kwargs["Body"] == sig_bytes
-
-    def test_uploaded_metadata_bytes_match_canonical_serialization(self):
-        """Uploaded metadata payload should exactly match canonical serializer output."""
-        today = date(2025, 7, 14)
-        metadata = {"title": "Test Art", "artist": "Test Artist"}
-        prepared = prepare_metadata_for_upload(
-            metadata,
-            today=today,
-            generated_at=datetime(2025, 7, 14, tzinfo=UTC),
-        )
-        expected_bytes = serialize_metadata(prepared)
-
-        mock_client = make_r2_client()
-        with patch("upload._get_client", return_value=mock_client):
-            upload(
-                original_bytes=b"original-data",
-                stylized_bytes=b"stylized-data",
-                metadata=prepared,
-                bucket="test-bucket",
-                today=today,
-                metadata_sig=b"fakesig",
-            )
-
-        calls = mock_client.put_object.call_args_list
-        metadata_call = next(
-            c for c in calls if c.kwargs.get("Key", "").endswith(".json")
-            and c.kwargs.get("Key", "").startswith("metadata/")
-        )
-        assert metadata_call.kwargs["Body"] == expected_bytes
+    def test_index_assets_found_across_pages(self):
+        """dates.json on a later page of the listing must still be read and replaced."""
+        fake = FakeGitHub(page_size=2)
+        index = fake.add_release("art-index")
+        for i in range(3):
+            fake.add_asset(index, f"junk-{i}.txt", b"x")
+        fake.add_asset(index, "dates.json", b'{"dates": ["2025-06-01"]}')
+        fake.add_asset(index, "latest.json", b'{"date": "2025-06-01"}')
+        run_upload(fake)
+        files = fake.files("art-index")
+        assert json.loads(files["dates.json"])["dates"] == ["2026-01-02", "2025-06-01"]
+        assert files["latest.json"] == b'{"date": "2026-01-02"}'
+        assert len(fake.files("art-index")) == 5  # replaced, not duplicated
+        list_calls = [u for m, u in fake.calls if m == "GET" and u.split("?")[0].endswith("/assets")]
+        assert any("page=3" in u for u in list_calls)
 
 
-class TestStrippedVariantNotDuplicated:
-    """generate_variants() always emits "stripped.jpg", and main.py builds
-    stripped_bytes separately when --strip is on. Both default to on, so the
-    default path used to PUT the same key twice."""
-
-    def _upload(self, **kwargs):
-        mock_client = make_r2_client()
-        with patch("upload._get_client", return_value=mock_client):
-            keys = upload(
-                b"original", b"stylized", {"title": "t"},
-                bucket="test", today=date(2026, 1, 2), **kwargs,
-            )
-        put_keys = [c.kwargs["Key"] for c in mock_client.put_object.call_args_list]
-        bodies = {c.kwargs["Key"]: c.kwargs["Body"] for c in mock_client.put_object.call_args_list}
-        return keys, put_keys, bodies
-
-    _VARIANTS = {
-        "avif": b"avif-data",
-        "webp": b"webp-data",
-        "progressive.jpg": b"progressive-data",
-        "stripped.jpg": b"variant-stripped",
-    }
-
-    def test_no_key_written_twice(self):
-        _, put_keys, _ = self._upload(
-            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
-        )
-        assert len(put_keys) == len(set(put_keys))
-
-    def test_explicit_stripped_bytes_win(self):
-        _, _, bodies = self._upload(
-            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
-        )
-        assert bodies["stylized/2026/01/02.stripped.jpg"] == b"explicit-stripped"
-
-    def test_variant_stripped_used_when_no_explicit_bytes(self):
-        _, put_keys, bodies = self._upload(variants=self._VARIANTS)
-        assert "stylized/2026/01/02.stripped.jpg" in put_keys
-        assert bodies["stylized/2026/01/02.stripped.jpg"] == b"variant-stripped"
-
-    def test_other_variants_unaffected(self):
-        _, put_keys, _ = self._upload(
-            variants=self._VARIANTS, stripped_bytes=b"explicit-stripped",
-        )
-        for suffix in ("avif", "webp", "progressive.jpg"):
-            assert f"stylized/2026/01/02.{suffix}" in put_keys
+class TestPagination:
+    def test_list_assets_follows_next_links(self):
+        fake = FakeGitHub(page_size=2)
+        release = fake.add_release(TAG)
+        for i in range(5):
+            fake.add_asset(release, f"a{i}", b"x")
+        client = make_github_client(fake)
+        assert [a["name"] for a in client.list_assets(release)] == ["a0", "a1", "a2", "a3", "a4"]
 
 
 class TestWriteOnceGuard:
     """upload() refuses to rewrite a date that has already been published.
 
-    Date keys are served with `immutable` and a one-year TTL. Rewriting them
-    leaves caches holding bytes they will never revalidate, and because uploads
-    land key-by-key a client can end up with one artwork's image beside another
-    artwork's metadata, permanently.
+    Dates are served with `immutable` and a one-year TTL. Rewriting them leaves
+    caches holding bytes they will never revalidate.
     """
 
-    def _upload(self, client, **kwargs):
-        with patch("upload._get_client", return_value=client):
-            return upload(
-                original_bytes=b"original-data",
-                stylized_bytes=b"stylized-data",
-                metadata={"title": "Test Art"},
-                bucket="test-bucket",
-                today=date(2026, 1, 2),
-                **kwargs,
-            )
-
-    def test_unpublished_date_uploads(self):
-        client = make_r2_client(published=False)
-        keys = self._upload(client)
-        assert keys["metadata"] == "metadata/2026/01/02.json"
-
-    def test_published_date_raises(self):
-        client = make_r2_client(published=True)
+    def test_published_date_raises_and_writes_nothing(self, fake):
+        fake.add_release(TAG)
         with pytest.raises(AlreadyPublishedError, match="2026-01-02"):
-            self._upload(client)
+            run_upload(fake)
+        assert fake.log == []
 
-    def test_published_date_writes_nothing(self):
-        """The guard must run before the first PUT, not partway through."""
-        client = make_r2_client(published=True)
-        with pytest.raises(AlreadyPublishedError):
-            self._upload(client)
-        assert client.put_object.call_count == 0
-
-    def test_overwrite_allows_republish(self):
-        client = make_r2_client(published=True)
-        keys = self._upload(client, overwrite=True)
+    def test_unpublished_date_uploads(self, fake):
+        keys = run_upload(fake)
         assert keys["metadata"] == "metadata/2026/01/02.json"
 
-    def test_overwrite_skips_the_existence_check(self):
-        client = make_r2_client(published=True)
-        self._upload(client, overwrite=True)
-        assert client.head_object.call_count == 0
+    def test_another_days_release_is_no_obstacle(self, fake):
+        fake.add_release("art-2026-01-01")
+        run_upload(fake)
+        assert fake.release_by_tag(TAG) is not None
 
-    def test_guard_checks_the_metadata_key_for_the_run_date(self):
-        client = make_r2_client(published=False)
-        self._upload(client)
-        assert client.head_object.call_args.kwargs["Key"] == "metadata/2026/01/02.json"
-        assert client.head_object.call_args.kwargs["Bucket"] == "test-bucket"
+    def test_overwrite_deletes_and_recreates_release_and_tag(self, fake):
+        old = fake.add_release(TAG)
+        fake.add_asset(old, "stylized.jpg", b"old-stylized")
+        run_upload(fake, overwrite=True)
+        assert fake.log[:3] == [
+            ("delete_release", TAG, None),
+            ("delete_tag", TAG, None),
+            ("create_release", TAG, None),
+        ]
+        new = fake.release_by_tag(TAG)
+        assert new is not None and new["id"] != old["id"]
+        assert fake.files(TAG)["stylized.jpg"] == b"stylized-data"
 
-    def test_non_404_client_error_propagates(self):
-        """A 403 means we could not determine the answer — do not publish over it."""
-        client = make_r2_client(published=False)
-        client.head_object.side_effect = ClientError(
-            {"Error": {"Code": "403", "Message": "Forbidden"},
-             "ResponseMetadata": {"HTTPStatusCode": 403}},
-            "HeadObject",
-        )
-        with pytest.raises(ClientError):
-            self._upload(client)
-        assert client.put_object.call_count == 0
+    def test_overwrite_on_unpublished_date_just_publishes(self, fake):
+        run_upload(fake, overwrite=True)
+        assert ("delete_release", TAG, None) not in fake.log
+        assert fake.release_by_tag(TAG) is not None
+
+    def test_lost_creation_race_raises_already_published(self, fake):
+        """A concurrent generator creates the release between check and create."""
+        client = make_github_client(fake)
+        real_get = client.get_release
+
+        def get_then_race(tag):
+            result = real_get(tag)
+            if tag == TAG and result is None:
+                fake.add_release(TAG)
+            return result
+
+        client.get_release = get_then_race
+        with patch("upload._get_client", side_effect=lambda repo=None: client), \
+             pytest.raises(AlreadyPublishedError):
+            upload(b"o", b"s", {"title": "T"}, today=DAY)
+        assert all(op != "upload" for op, _, _ in fake.log)
+
+    def test_non_404_lookup_error_propagates(self, fake):
+        """A 401 answers nothing; it must not read as "free to publish"."""
+        fake.faults[("GET", "release_by_tag")] = [401]
+        with pytest.raises(GitHubAPIError):
+            run_upload(fake)
+        assert fake.log == []
+
+    def test_failed_asset_upload_rolls_back_the_release(self, fake):
+        """A half-published day would otherwise be skipped by every retry run."""
+        fake.faults[("POST", "upload")] = [400]
+        with pytest.raises(GitHubAPIError):
+            run_upload(fake)
+        assert fake.release_by_tag(TAG) is None
+        assert TAG not in fake.tags
+        assert fake.release_by_tag("art-index") is None
 
 
 class TestAssertUnpublishedPreflight:
-    """The public wrapper main.py calls before spending 30s on an image.
+    """The public wrapper main.py calls before spending 30s on an image."""
 
-    It answers the same question as the guard inside upload(), against the same
-    key, so a preflight that passes and an upload that then refuses can only
-    mean a concurrent generator — never a disagreement between the two checks.
-    """
+    def _preflight(self, fake):
+        with _patched(fake):
+            return assert_unpublished(today=DAY)
 
-    def _preflight(self, client, **kwargs):
-        with patch("upload._get_client", return_value=client):
-            return assert_unpublished(today=date(2026, 1, 2), bucket="test-bucket", **kwargs)
+    def test_unpublished_date_passes(self, fake):
+        assert self._preflight(fake) is None
 
-    def test_unpublished_date_passes(self):
-        assert self._preflight(make_r2_client(published=False)) is None
-
-    def test_published_date_raises(self):
+    def test_published_date_raises(self, fake):
+        fake.add_release(TAG)
         with pytest.raises(AlreadyPublishedError, match="2026-01-02"):
-            self._preflight(make_r2_client(published=True))
+            self._preflight(fake)
 
-    def test_checks_the_same_key_the_upload_guard_checks(self):
-        client = make_r2_client(published=False)
-        self._preflight(client)
-        assert client.head_object.call_args.kwargs["Key"] == "metadata/2026/01/02.json"
-        assert client.head_object.call_args.kwargs["Bucket"] == "test-bucket"
+    def test_checks_the_same_tag_the_upload_guard_checks(self, fake):
+        self._preflight(fake)
+        assert fake.calls == [("GET", f"https://api.github.com/repos/{fake.repo}/releases/tags/{TAG}")]
 
-    def test_never_writes(self):
-        client = make_r2_client(published=False)
-        self._preflight(client)
-        assert client.put_object.call_count == 0
+    def test_never_writes(self, fake):
+        self._preflight(fake)
+        assert fake.log == []
 
-    def test_non_404_client_error_propagates(self):
-        """A 403 answers nothing; it must not read as "free to publish"."""
-        client = make_r2_client(published=False)
-        client.head_object.side_effect = ClientError(
-            {"Error": {"Code": "403", "Message": "Forbidden"},
-             "ResponseMetadata": {"HTTPStatusCode": 403}},
-            "HeadObject",
-        )
-        with pytest.raises(ClientError):
-            self._preflight(client)
+    def test_non_404_error_propagates(self, fake):
+        fake.faults[("GET", "release_by_tag")] = [401]
+        with pytest.raises(GitHubAPIError):
+            self._preflight(fake)
 
-    def test_bucket_defaults_to_the_environment(self):
-        client = make_r2_client(published=False)
-        with patch("upload._get_client", return_value=client), \
-             patch.dict(os.environ, {"R2_BUCKET": "env-bucket"}):
-            assert_unpublished(today=date(2026, 1, 2))
-        assert client.head_object.call_args.kwargs["Bucket"] == "env-bucket"
+
+class TestRetries:
+    def test_transient_5xx_is_retried(self, fake):
+        fake.faults[("POST", "upload")] = [502, 503]
+        run_upload(fake)
+        assert "original.jpg" in fake.files(TAG)
+
+    def test_secondary_rate_limit_is_retried(self, fake):
+        fake.faults[("GET", "release_by_tag")] = [FakeResponse(
+            403, b'{"message": "You have exceeded a secondary rate limit."}', {"Retry-After": "2"},
+        )]
+        sleeps: list[float] = []
+        with patch.object(upload_mod, "_sleep", sleeps.append):
+            run_upload(fake)
+        assert sleeps == [2.0]
+
+    def test_plain_403_is_not_retried(self, fake):
+        fake.faults[("GET", "release_by_tag")] = [403]
+        with pytest.raises(GitHubAPIError):
+            run_upload(fake)
+        assert len(fake.calls) == 1
+
+    def test_retries_are_bounded(self, fake):
+        fake.faults[("GET", "release_by_tag")] = [500] * 10
+        with pytest.raises(GitHubAPIError):
+            run_upload(fake)
+        assert len(fake.calls) == upload_mod._MAX_ATTEMPTS
+
+    def test_upload_answered_already_exists_is_replaced(self, fake):
+        """A retried POST whose first attempt landed gets 422; replace, don't fail."""
+        client = make_github_client(fake)
+        release = fake.add_release(TAG)
+        fake.add_asset(release, "original.jpg", b"partial", "image/jpeg")
+        client.upload_asset(release, "original.jpg", b"full", "image/jpeg")
+        assert fake.files(TAG) == {"original.jpg": b"full"}
+
+
+class TestClientConfig:
+    def test_token_required(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        upload_mod._get_client.cache_clear()
+        with pytest.raises(RuntimeError, match="GITHUB_TOKEN"):
+            upload_mod._get_client()
+
+    def test_repo_from_env_with_override(self, monkeypatch):
+        monkeypatch.setenv("GH_TOKEN", "t")
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.setenv("GITHUB_REPOSITORY", "someone/fork")
+        monkeypatch.delenv("BAUHAUS_REPO", raising=False)
+        upload_mod._get_client.cache_clear()
+        assert upload_mod._get_client().repo == "someone/fork"
+        monkeypatch.setenv("BAUHAUS_REPO", "other/repo")
+        upload_mod._get_client.cache_clear()
+        assert upload_mod._get_client().repo == "other/repo"
+        assert upload_mod._get_client("explicit/repo").repo == "explicit/repo"
+        upload_mod._get_client.cache_clear()
 
 
 class TestCacheControlHeaders:
-    def test_date_keys_are_immutable_and_shared_cacheable(self):
-        client = make_r2_client()
-        with patch("upload._get_client", return_value=client):
-            upload(
-                original_bytes=b"o", stylized_bytes=b"s",
-                metadata={"title": "T"}, bucket="b", today=date(2026, 1, 2),
-                variants={"webp": b"w"}, stripped_bytes=b"x",
-                manifest={"date": "2026-01-02"}, metadata_sig=b"sig",
-            )
-        for call in client.put_object.call_args_list:
-            if call.kwargs["Key"] == "latest.json":
-                continue
-            assert call.kwargs["CacheControl"] == IMMUTABLE_CACHE
-
     def test_immutable_header_matches_the_worker_constant(self):
-        """The Worker prefers R2's stored header, so a drift here is what ships.
+        """objects.json records this header for the Worker to serve.
 
         worker/src/index.ts declares the same string; if these diverge the
-        Worker's constant becomes unreachable for pipeline-written objects and
-        the served header is silently whatever upload.py wrote.
+        served header depends on which source the Worker happens to read.
         """
         worker_src = (
             Path(__file__).resolve().parent.parent / "worker" / "src" / "index.ts"
@@ -484,15 +469,7 @@ class TestCacheControlHeaders:
         assert match.group(1) == IMMUTABLE_CACHE
 
     def test_latest_pointer_is_short_lived(self):
-        client = make_r2_client()
-        with patch("upload._get_client", return_value=client):
-            upload(
-                original_bytes=b"o", stylized_bytes=b"s",
-                metadata={"title": "T"}, bucket="b", today=date(2026, 1, 2),
-            )
-        latest = [c for c in client.put_object.call_args_list
-                  if c.kwargs["Key"] == "latest.json"][0]
-        assert latest.kwargs["CacheControl"] == LATEST_CACHE
+        assert LATEST_CACHE == "public, max-age=300"
 
 
 class TestUtcToday:
@@ -515,15 +492,11 @@ class TestUtcToday:
             mock_dt.now.return_value = datetime(2026, 1, 2, 4, 0, tzinfo=UTC)
             assert utc_today() == date(2026, 1, 2)
 
-    def test_upload_defaults_to_utc_today(self):
-        client = make_r2_client()
-        with patch("upload._get_client", return_value=client), \
-             patch("upload.utc_today", return_value=date(2026, 3, 4)):
-            keys = upload(
-                original_bytes=b"o", stylized_bytes=b"s",
-                metadata={"title": "T"}, bucket="b",
-            )
+    def test_upload_defaults_to_utc_today(self, fake):
+        with _patched(fake), patch("upload.utc_today", return_value=date(2026, 3, 4)):
+            keys = upload(original_bytes=b"o", stylized_bytes=b"s", metadata={"title": "T"})
         assert keys["stylized"] == "stylized/2026/03/04.jpg"
+        assert fake.release_by_tag("art-2026-03-04") is not None
 
     def test_prepare_metadata_defaults_to_utc_today(self):
         with patch("upload.utc_today", return_value=date(2026, 3, 4)):

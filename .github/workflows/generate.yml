@@ -33,7 +33,7 @@ permissions:
   contents: read
 
 # One generation at a time: a manual dispatch must not race the scheduled run
-# for the same date's R2 keys.
+# for the same date's release.
 concurrency:
   group: generate-daily-art
   cancel-in-progress: false
@@ -84,6 +84,10 @@ jobs:
     needs: route
     runs-on: ${{ fromJSON(needs.route.outputs.runs-on) }}
     timeout-minutes: 20
+    # Publishing creates the day's release (tag art-YYYY-MM-DD) and rewrites
+    # the art-index release's assets, both through GITHUB_TOKEN.
+    permissions:
+      contents: write
     # Job-level env: the `secrets` context is not available in step-level `if:`
     # conditions, but `env` is — so gate values must be surfaced here.
     env:
@@ -161,10 +165,8 @@ jobs:
           # A manual dispatch that collides still fails loudly: there the
           # operator asked for a publish and did not get one.
           SKIP_IF_PUBLISHED: ${{ github.event_name == 'schedule' && '1' || '' }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: bauhaus
+          # Publishes to this repo's GitHub Releases (see src/upload.py).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           STYLE_MODE: curated
           LANDSCAPES_ONLY: 'true'

@@ -3,7 +3,7 @@
 main() is where the pipeline's ordering, gating and plumbing live, and it was
 the largest wholly untested surface in the project: every module it calls had
 unit tests, but nothing exercised the sequence that wires them together. These
-tests patch the expensive leaves (network, model, R2) and assert on what main()
+tests patch the expensive leaves (network, model, GitHub publishing) and assert on what main()
 does with them.
 """
 
@@ -190,14 +190,14 @@ class TestPreflight:
         assert h.upload.call_args.kwargs["today"] == date(2026, 1, 2)
 
     def test_overwrite_skips_the_preflight(self):
-        """--overwrite means publish regardless; asking R2 first proves nothing."""
+        """--overwrite means publish regardless; asking GitHub first proves nothing."""
         with _Harness(["--overwrite"]) as h:
             main_mod.main()
         assert h.assert_unpublished.call_count == 0
         assert h.upload.call_count == 1
 
     def test_dry_run_never_touches_r2(self, tmp_path):
-        """A dry run has no R2 credentials to preflight with."""
+        """A dry run has no GitHub token to preflight with."""
         with _Harness(["--dry-run"]) as h, patch.object(main_mod, "OUTPUT_DIR", tmp_path):
             main_mod.main()
         assert h.assert_unpublished.call_count == 0
@@ -249,7 +249,7 @@ class TestSkipIfPublished:
         assert exc.value.code == 2
 
     def test_signed_bytes_are_the_uploaded_bytes(self):
-        """The signature must cover exactly the JSON that lands in R2."""
+        """The signature must cover exactly the JSON that gets published."""
         with _Harness([], env={"GPG_KEY_ID": "ABC123"}) as h:
             main_mod.main()
 

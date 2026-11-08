@@ -60,7 +60,8 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT; retried at 10 AM UTC)
   3. AdaIN style transfer (CPU, ~5s at native resolution)
   4. Score the result (heuristics + NIMA) and record it in the metadata
   5. Generate AVIF + WebP variants for smaller files and faster loads
-  6. Upload original + stylized (JPEG/AVIF/WebP) + metadata to Cloudflare R2
+  6. Publish original + stylized (JPEG/AVIF/WebP) + metadata as a GitHub
+     release (tag art-YYYY-MM-DD), then update the art-index release
          |
   CF Worker API <-- R2 bucket
     GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
@@ -296,7 +297,7 @@ just download-styles
 # Run tests
 just test
 
-# Generate locally (no R2 upload)
+# Generate locally (nothing published)
 just generate
 
 # Generate benchmark metrics for parity tracking
@@ -313,7 +314,7 @@ just generate --alpha 0.5         # subtle style (0.0-1.0)
 just generate --any-subject       # disable landscape filter
 just generate --max-size 1536     # higher processing resolution
 just generate --no-score          # skip NIMA scoring (heuristics still run)
-just generate --overwrite         # republish a date already in R2
+just generate --overwrite         # republish a date that already has a release
 just generate --skip-if-published # exit 0 instead of failing if the date exists
 
 # List all available recipes
@@ -346,10 +347,8 @@ just worker-check     # typecheck
 
 | Variable | Description |
 |----------|-------------|
-| `R2_ENDPOINT` | Cloudflare R2 S3-compatible endpoint |
-| `R2_ACCESS_KEY_ID` | R2 access key |
-| `R2_SECRET_ACCESS_KEY` | R2 secret key |
-| `R2_BUCKET` | Bucket name (default: `bauhaus`) |
+| `GITHUB_TOKEN` | Token with `contents: write` on the repo, used to publish each day as a GitHub release (`GH_TOKEN` also works). The workflow passes its own `GITHUB_TOKEN`. |
+| `BAUHAUS_REPO` | Repository to publish releases to (default: `GITHUB_REPOSITORY`, else `cascadiacollections/bauhaus`) |
 | `STYLE_MODE` | `curated` (rotate shipped styles) or `random` (fetch second CC0 painting) |
 | `UNSPLASH_ACCESS_KEY` | Unsplash API access key. Needed for `--source unsplash` and for the scheduled emergency fallback when both CC0 museum sources fail; the CC0 museum sources require no credentials. |
 | `LANDSCAPES_ONLY` | `true` (default) bias toward landscapes/seascapes, `false` for any subject |
@@ -363,7 +362,7 @@ just worker-check     # typecheck
 ### Secrets and deployment hygiene
 
 - Keep secrets in GitHub Actions secrets / local `.env` files only; never print them in logs.
-- The production workflow uses `R2_*` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
+- The production workflow uses `GITHUB_TOKEN` and `UNSPLASH_ACCESS_KEY` from secret storage, not hard-coded values.
 - For local Podman runs, pass env vars via `--env-file .env` or a secret manager rather than embedding them in shell history.
 
 ### Metadata signing (PGP)
