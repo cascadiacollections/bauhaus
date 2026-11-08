@@ -1,8 +1,8 @@
 """Tests for upload.py — GitHub Releases layout, ordering, and the write-once guard.
 
 Every test drives the real GitHubReleases client against FakeGitHub (an
-in-memory GitHub REST API), so URL building, pagination, retries and status
-handling are exercised, not mocked away.
+in-memory GitHub REST API with immutable releases on), so URL building,
+pagination, retries and status handling are exercised, not mocked away.
 """
 
 import hashlib
@@ -18,7 +18,6 @@ from helpers import FakeGitHub, FakeResponse, make_github_client
 import upload as upload_mod
 from upload import (
     IMMUTABLE_CACHE,
-    LATEST_CACHE,
     AlreadyPublishedError,
     GitHubAPIError,
     assert_unpublished,
@@ -77,6 +76,10 @@ def objects_json(fake: FakeGitHub, tag: str = TAG) -> dict:
     return json.loads(fake.files(tag)["objects.json"])
 
 
+def dates_json(fake: FakeGitHub, tag: str = TAG) -> list[str]:
+    return json.loads(fake.files(tag)["dates.json"])["dates"]
+
+
 class TestAssetMapping:
     def test_every_key_maps_to_its_flat_asset_name(self, fake):
         full_upload(fake)
@@ -92,10 +95,11 @@ class TestAssetMapping:
             "manifests/2026/01/02.json": "manifest.json",
         }
 
-    def test_release_assets_are_exactly_the_mapped_files_plus_objects(self, fake):
+    def test_release_assets_are_the_mapped_files_plus_dates_and_objects(self, fake):
         full_upload(fake)
         names = set(fake.files(TAG))
-        assert names == {v["asset"] for v in objects_json(fake).values()} | {"objects.json"}
+        mapped = {v["asset"] for v in objects_json(fake).values()}
+        assert names == mapped | {"dates.json", "objects.json"}
 
     def test_returned_keys_are_the_legacy_keys(self, fake):
         keys = full_upload(fake)
@@ -107,7 +111,8 @@ class TestAssetMapping:
         assert keys["metadata_sig"] == "metadata/2026/01/02.json.sig"
         assert keys["manifest"] == "manifests/2026/01/02.json"
         assert keys["stripped"] == "stylized/2026/01/02.stripped.jpg"
-        assert keys["latest"] == "latest.json"
+        assert keys["dates"] == "dates.json"
+        assert "latest" not in keys
 
     def test_date_path_formatting(self, fake):
         keys = run_upload(fake, date(2025, 12, 25))
@@ -116,7 +121,9 @@ class TestAssetMapping:
 
     def test_minimal_upload(self, fake):
         keys = run_upload(fake)
-        assert set(fake.files(TAG)) == {"original.jpg", "stylized.jpg", "metadata.json", "objects.json"}
+        assert set(fake.files(TAG)) == {
+            "original.jpg", "stylized.jpg", "metadata.json", "dates.json", "objects.json",
+        }
         assert "manifest" not in keys and "metadata_sig" not in keys and "stripped" not in keys
 
     def test_content_types(self, fake):
@@ -131,6 +138,7 @@ class TestAssetMapping:
             "metadata.json": "application/json",
             "metadata.json.sig": "application/pgp-signature",
             "manifest.json": "application/json",
+            "dates.json": "application/json",
             "objects.json": "application/json",
         }
 
@@ -139,10 +147,17 @@ class TestAssetMapping:
         release = fake.release_by_tag(TAG)
         assert release is not None
         assert release["name"] == "Bauhaus 2026-01-02"
+        assert release["draft"] is False
         assert release["prerelease"] is True
         assert release["make_latest"] == "false"
         assert release["target_commitish"] == "main"
         assert release["body"] == "Test Art — Test Artist"
+
+    def test_no_index_release_and_no_latest_json(self, fake):
+        full_upload(fake)
+        assert [r["tag_name"] for r in fake.releases.values()] == [TAG]
+        assert all("art-index" not in url for _, url in fake.calls)
+        assert "latest.json" not in fake.files(TAG)
 
 
 class TestBytes:
@@ -197,108 +212,101 @@ class TestObjectsJson:
             offset = datetime.fromisoformat(entry["uploaded"]).utcoffset()
             assert offset is not None and offset.total_seconds() == 0
 
-    def test_objects_json_is_not_listed_in_itself(self, fake):
+    def test_objects_json_lists_neither_itself_nor_dates_json(self, fake):
         full_upload(fake)
-        assert all(e["asset"] != "objects.json" for e in objects_json(fake).values())
+        listed = {e["asset"] for e in objects_json(fake).values()}
+        assert "objects.json" not in listed
+        assert "dates.json" not in listed
 
-    def test_objects_json_uploaded_last_in_the_day_release(self, fake):
+
+class TestOrder:
+    def test_draft_then_uploads_then_publish_last(self, fake):
         full_upload(fake)
-        day_uploads = [name for op, tag, name in fake.log if op == "upload" and tag == TAG]
-        assert day_uploads[-1] == "objects.json"
-        assert len(day_uploads) == len(fake.files(TAG))
+        ops = [(op, name) for op, tag, name in fake.log if tag == TAG]
+        assert ops[0] == ("create_draft", None)
+        assert ops[-1] == ("publish", None)
+        uploads = [name for op, name in ops if op == "upload"]
+        assert uploads[-2:] == ["dates.json", "objects.json"]
+        assert len(uploads) == len(fake.files(TAG))
+        assert ops[1:-1] == [("upload", n) for n in uploads]
 
-
-class TestIndex:
-    def test_creates_index_release_with_dates_and_latest(self, fake):
-        run_upload(fake)
-        index = fake.release_by_tag("art-index")
-        assert index is not None
-        assert index["name"] == "Bauhaus index"
-        assert index["prerelease"] is True
-        assert index["make_latest"] == "false"
-        files = fake.files("art-index")
-        assert json.loads(files["dates.json"]) == {"dates": ["2026-01-02"]}
-        assert fake.content_types("art-index")["latest.json"] == "application/json"
-
-    def test_latest_json_bytes_match_the_old_r2_pointer(self, fake):
-        run_upload(fake)
-        assert fake.files("art-index")["latest.json"] == json.dumps({"date": "2026-01-02"}).encode()
-        assert fake.files("art-index")["latest.json"] == b'{"date": "2026-01-02"}'
-
-    def test_dates_json_updated_sorted_descending_and_deduplicated(self, fake):
-        index = fake.add_release("art-index", name="Bauhaus index")
-        existing = {"dates": ["2026-01-01", "2025-12-31", "2026-01-03", "2026-01-01"]}
-        fake.add_asset(index, "dates.json", json.dumps(existing).encode())
-        fake.add_asset(index, "latest.json", b'{"date": "2026-01-03"}')
-        run_upload(fake)
-        files = fake.files("art-index")
-        assert json.loads(files["dates.json"])["dates"] == [
-            "2026-01-03", "2026-01-02", "2026-01-01", "2025-12-31",
-        ]
-        assert files["latest.json"] == b'{"date": "2026-01-02"}'
-
-    def test_already_listed_date_is_not_duplicated(self, fake):
-        index = fake.add_release("art-index")
-        fake.add_asset(index, "dates.json", json.dumps({"dates": ["2026-01-02"]}).encode())
-        run_upload(fake)
-        assert json.loads(fake.files("art-index")["dates.json"]) == {"dates": ["2026-01-02"]}
-
-    def test_index_assets_replaced_by_delete_then_upload(self, fake):
-        index = fake.add_release("art-index")
-        fake.add_asset(index, "dates.json", b'{"dates": ["2026-01-01"]}')
-        fake.add_asset(index, "latest.json", b'{"date": "2026-01-01"}')
-        run_upload(fake)
-        index_ops = [(op, name) for op, tag, name in fake.log if tag == "art-index"]
-        assert index_ops == [
-            ("delete_asset", "dates.json"),
-            ("upload", "dates.json"),
-            ("delete_asset", "latest.json"),
-            ("upload", "latest.json"),
-        ]
-        assert sorted(fake.files("art-index")) == ["dates.json", "latest.json"]
-
-    def test_order_day_release_then_dates_then_latest(self, fake):
+    def test_publish_is_the_last_write(self, fake):
         full_upload(fake)
-        sequence = list(fake.log)
-        objects_at = sequence.index(("upload", TAG, "objects.json"))
-        dates_at = sequence.index(("upload", "art-index", "dates.json"))
-        latest_at = sequence.index(("upload", "art-index", "latest.json"))
-        assert objects_at < dates_at < latest_at
-        assert all(tag != "art-index" for _, tag, _ in sequence[:objects_at + 1])
+        assert fake.log[-1] == ("publish", TAG, None)
+        assert sum(op == "publish" for op, _, _ in fake.log) == 1
 
-    def test_index_assets_found_across_pages(self):
-        """dates.json on a later page of the listing must still be read and replaced."""
+
+class TestDatesSnapshot:
+    def test_first_day_lists_only_itself(self, fake):
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02"]
+        assert fake.files(TAG)["dates.json"] == json.dumps({"dates": ["2026-01-02"]}).encode()
+
+    def test_carries_forward_the_previous_days_list(self, fake):
+        fake.add_day("2026-01-01", ["2026-01-01", "2025-12-30"])
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02", "2026-01-01", "2025-12-30"]
+
+    def test_sorted_descending_and_deduplicated(self, fake):
+        fake.add_day("2026-01-01", ["2025-12-30", "2026-01-01", "2025-12-31", "2026-01-01", "2026-01-02"])
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02", "2026-01-01", "2025-12-31", "2025-12-30"]
+
+    def test_uses_the_most_recent_earlier_published_day(self, fake):
+        fake.add_day("2025-12-31", ["2025-12-31", "2025-12-29"])
+        fake.add_day("2025-12-30", ["2025-12-30", "2025-12-29"])
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02", "2025-12-31", "2025-12-30", "2025-12-29"]
+        # Only the newest earlier day's snapshot is downloaded.
+        downloads = [u for m, u in fake.calls if m == "GET" and "/releases/assets/" in u]
+        assert len(downloads) == 1
+
+    def test_ignores_drafts(self, fake):
+        fake.add_day("2025-12-30", ["2025-12-30"])
+        fake.add_day("2026-01-01", ["2026-01-01", "2025-12-30", "1999-01-01"], draft=True)
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02", "2025-12-30"]
+
+    def test_ignores_non_art_tags_and_later_days(self, fake):
+        fake.add_day("2025-12-30", ["2025-12-30"])
+        other = fake.add_release("v1.0.0")
+        fake.add_asset(other, "dates.json", b'{"dates": ["1999-01-01"]}')
+        odd = fake.add_release("art-2025-12-31-extra")
+        fake.add_asset(odd, "dates.json", b'{"dates": ["1999-01-02"]}')
+        fake.add_day("2026-02-01", ["2026-02-01", "1999-01-03"])
+        run_upload(fake)
+        assert dates_json(fake) == ["2026-01-02", "2025-12-30"]
+
+    def test_previous_release_found_across_pages(self):
         fake = FakeGitHub(page_size=2)
-        index = fake.add_release("art-index")
-        for i in range(3):
-            fake.add_asset(index, f"junk-{i}.txt", b"x")
-        fake.add_asset(index, "dates.json", b'{"dates": ["2025-06-01"]}')
-        fake.add_asset(index, "latest.json", b'{"date": "2025-06-01"}')
+        fake.add_day("2025-12-01", ["2025-12-01"])
+        for i in range(5):
+            fake.add_release(f"v0.{i}")
         run_upload(fake)
-        files = fake.files("art-index")
-        assert json.loads(files["dates.json"])["dates"] == ["2026-01-02", "2025-06-01"]
-        assert files["latest.json"] == b'{"date": "2026-01-02"}'
-        assert len(fake.files("art-index")) == 5  # replaced, not duplicated
-        list_calls = [u for m, u in fake.calls if m == "GET" and u.split("?")[0].endswith("/assets")]
-        assert any("page=3" in u for u in list_calls)
+        assert dates_json(fake) == ["2026-01-02", "2025-12-01"]
+        release_pages = [u for m, u in fake.calls if m == "GET" and u.split("?")[0].endswith("/releases")]
+        assert len(release_pages) == 3
 
 
 class TestPagination:
     def test_list_assets_follows_next_links(self):
         fake = FakeGitHub(page_size=2)
-        release = fake.add_release(TAG)
+        release = fake.add_release(TAG, draft=True)
         for i in range(5):
             fake.add_asset(release, f"a{i}", b"x")
         client = make_github_client(fake)
         assert [a["name"] for a in client.list_assets(release)] == ["a0", "a1", "a2", "a3", "a4"]
 
+    def test_list_releases_follows_next_links(self):
+        fake = FakeGitHub(page_size=2)
+        for i in range(5):
+            fake.add_release(f"t{i}", draft=i % 2 == 0)
+        client = make_github_client(fake)
+        assert sorted(r["tag_name"] for r in client.list_releases()) == [f"t{i}" for i in range(5)]
+
 
 class TestWriteOnceGuard:
-    """upload() refuses to rewrite a date that has already been published.
-
-    Dates are served with `immutable` and a one-year TTL. Rewriting them leaves
-    caches holding bytes they will never revalidate.
-    """
+    """A published release is immutable; the date can never be published again."""
 
     def test_published_date_raises_and_writes_nothing(self, fake):
         fake.add_release(TAG)
@@ -315,64 +323,111 @@ class TestWriteOnceGuard:
         run_upload(fake)
         assert fake.release_by_tag(TAG) is not None
 
-    def test_overwrite_deletes_and_recreates_release_and_tag(self, fake):
-        old = fake.add_release(TAG)
-        fake.add_asset(old, "stylized.jpg", b"old-stylized")
-        run_upload(fake, overwrite=True)
-        assert fake.log[:3] == [
-            ("delete_release", TAG, None),
-            ("delete_tag", TAG, None),
-            ("create_release", TAG, None),
-        ]
-        new = fake.release_by_tag(TAG)
-        assert new is not None and new["id"] != old["id"]
-        assert fake.files(TAG)["stylized.jpg"] == b"stylized-data"
+    def test_leftover_draft_is_deleted_and_redone(self, fake):
+        leftover = fake.add_day("2026-01-02", None, draft=True)
+        fake.add_asset(leftover, "original.jpg", b"stale")
+        run_upload(fake)
+        assert fake.log[0] == ("delete_release", TAG, None)
+        assert fake.log[1] == ("create_draft", TAG, None)
+        assert leftover["id"] not in fake.releases
+        assert fake.files(TAG)["original.jpg"] == b"original-data"
+        assert [r["tag_name"] for r in fake.releases.values()] == [TAG]
+
+    def test_leftover_draft_is_not_published(self, fake):
+        """--skip-if-published's preflight must not see a draft as published."""
+        fake.add_day("2026-01-02", None, draft=True)
+        with _patched(fake):
+            assert assert_unpublished(today=DAY) is None
+
+    def test_overwrite_refuses_a_published_date(self, fake):
+        """Immutable releases: deleting would burn the tag, so overwrite is impossible."""
+        fake.add_release(TAG)
+        with pytest.raises(AlreadyPublishedError, match="immutable releases"):
+            run_upload(fake, overwrite=True)
+        assert fake.log == []
+        assert fake.release_by_tag(TAG) is not None
 
     def test_overwrite_on_unpublished_date_just_publishes(self, fake):
         run_upload(fake, overwrite=True)
-        assert ("delete_release", TAG, None) not in fake.log
         assert fake.release_by_tag(TAG) is not None
+        assert not any(op == "delete_release" for op, _, _ in fake.log)
 
-    def test_lost_creation_race_raises_already_published(self, fake):
-        """A concurrent generator creates the release between check and create."""
+    def test_published_concurrently_before_publish_discards_our_draft(self, fake):
+        """Someone else publishes the date while our draft is being filled."""
         client = make_github_client(fake)
-        real_get = client.get_release
+        real_upload = client.upload_asset
 
-        def get_then_race(tag):
-            result = real_get(tag)
-            if tag == TAG and result is None:
+        def upload_then_race(release, name, data, content_type):
+            result = real_upload(release, name, data, content_type)
+            if name == "objects.json":
                 fake.add_release(TAG)
             return result
 
-        client.get_release = get_then_race
+        client.upload_asset = upload_then_race
         with patch("upload._get_client", side_effect=lambda repo=None: client), \
              pytest.raises(AlreadyPublishedError):
             upload(b"o", b"s", {"title": "T"}, today=DAY)
-        assert all(op != "upload" for op, _, _ in fake.log)
+        assert fake.release_by_tag(TAG, draft=True) is None
+        assert all(op != "publish" for op, _, _ in fake.log)
+
+    def test_publish_rejected_because_tag_taken_discards_our_draft(self, fake):
+        client = make_github_client(fake)
+        real_publish = client.publish_release
+
+        def race_then_publish(release):
+            fake.add_release(TAG)
+            return real_publish(release)
+
+        client.publish_release = race_then_publish
+        with patch("upload._get_client", side_effect=lambda repo=None: client), \
+             pytest.raises(AlreadyPublishedError):
+            upload(b"o", b"s", {"title": "T"}, today=DAY)
+        assert fake.release_by_tag(TAG, draft=True) is None
+
+    def test_burned_tag_fails_and_leaves_the_draft(self, fake):
+        """A deleted immutable release's tag can't be reused; nothing is published."""
+        fake.burned.add(TAG)
+        with pytest.raises(GitHubAPIError):
+            run_upload(fake)
+        assert fake.release_by_tag(TAG) is None
+        assert fake.release_by_tag(TAG, draft=True) is not None
+
+    def test_publish_that_landed_despite_an_error_counts_as_success(self, fake):
+        client = make_github_client(fake)
+        real_publish = client.publish_release
+
+        def publish_then_fail(release):
+            real_publish(release)
+            raise GitHubAPIError("PATCH", "x", 502, "bad gateway")
+
+        client.publish_release = publish_then_fail
+        with patch("upload._get_client", side_effect=lambda repo=None: client):
+            keys = upload(b"o", b"s", {"title": "T"}, today=DAY)
+        assert keys["original"] == "originals/2026/01/02.jpg"
+        assert fake.release_by_tag(TAG) is not None
 
     def test_non_404_lookup_error_propagates(self, fake):
         """A 401 answers nothing; it must not read as "free to publish"."""
-        fake.faults[("GET", "release_by_tag")] = [401]
+        fake.faults[("GET", "releases")] = [401]
         with pytest.raises(GitHubAPIError):
             run_upload(fake)
         assert fake.log == []
 
-    def test_failed_asset_upload_rolls_back_the_release(self, fake):
-        """A half-published day would otherwise be skipped by every retry run."""
+    def test_failed_asset_upload_deletes_the_draft(self, fake):
         fake.faults[("POST", "upload")] = [400]
         with pytest.raises(GitHubAPIError):
             run_upload(fake)
-        assert fake.release_by_tag(TAG) is None
-        assert TAG not in fake.tags
-        assert fake.release_by_tag("art-index") is None
+        assert fake.releases == {}
+        assert fake.burned == set()
+        assert all(op != "publish" for op, _, _ in fake.log)
 
 
 class TestAssertUnpublishedPreflight:
     """The public wrapper main.py calls before spending 30s on an image."""
 
-    def _preflight(self, fake):
+    def _preflight(self, fake, **kwargs):
         with _patched(fake):
-            return assert_unpublished(today=DAY)
+            return assert_unpublished(today=DAY, **kwargs)
 
     def test_unpublished_date_passes(self, fake):
         assert self._preflight(fake) is None
@@ -382,7 +437,12 @@ class TestAssertUnpublishedPreflight:
         with pytest.raises(AlreadyPublishedError, match="2026-01-02"):
             self._preflight(fake)
 
-    def test_checks_the_same_tag_the_upload_guard_checks(self, fake):
+    def test_overwrite_explains_immutability(self, fake):
+        fake.add_release(TAG)
+        with pytest.raises(AlreadyPublishedError, match="could never be used again"):
+            self._preflight(fake, overwrite=True)
+
+    def test_checks_the_published_release_by_tag(self, fake):
         self._preflight(fake)
         assert fake.calls == [("GET", f"https://api.github.com/repos/{fake.repo}/releases/tags/{TAG}")]
 
@@ -403,7 +463,7 @@ class TestRetries:
         assert "original.jpg" in fake.files(TAG)
 
     def test_secondary_rate_limit_is_retried(self, fake):
-        fake.faults[("GET", "release_by_tag")] = [FakeResponse(
+        fake.faults[("GET", "releases")] = [FakeResponse(
             403, b'{"message": "You have exceeded a secondary rate limit."}', {"Retry-After": "2"},
         )]
         sleeps: list[float] = []
@@ -412,13 +472,13 @@ class TestRetries:
         assert sleeps == [2.0]
 
     def test_plain_403_is_not_retried(self, fake):
-        fake.faults[("GET", "release_by_tag")] = [403]
+        fake.faults[("GET", "releases")] = [403]
         with pytest.raises(GitHubAPIError):
             run_upload(fake)
         assert len(fake.calls) == 1
 
     def test_retries_are_bounded(self, fake):
-        fake.faults[("GET", "release_by_tag")] = [500] * 10
+        fake.faults[("GET", "releases")] = [500] * 10
         with pytest.raises(GitHubAPIError):
             run_upload(fake)
         assert len(fake.calls) == upload_mod._MAX_ATTEMPTS
@@ -426,10 +486,11 @@ class TestRetries:
     def test_upload_answered_already_exists_is_replaced(self, fake):
         """A retried POST whose first attempt landed gets 422; replace, don't fail."""
         client = make_github_client(fake)
-        release = fake.add_release(TAG)
+        release = fake.add_release(TAG, draft=True)
         fake.add_asset(release, "original.jpg", b"partial", "image/jpeg")
         client.upload_asset(release, "original.jpg", b"full", "image/jpeg")
-        assert fake.files(TAG) == {"original.jpg": b"full"}
+        assets = [a for a in fake.assets.values() if a["_release"] == release["id"]]
+        assert [(a["name"], a["_data"]) for a in assets] == [("original.jpg", b"full")]
 
 
 class TestClientConfig:
@@ -467,9 +528,6 @@ class TestCacheControlHeaders:
         match = re.search(r'const IMMUTABLE_CACHE = "([^"]+)"', worker_src)
         assert match, "IMMUTABLE_CACHE not found in worker/src/index.ts"
         assert match.group(1) == IMMUTABLE_CACHE
-
-    def test_latest_pointer_is_short_lived(self):
-        assert LATEST_CACHE == "public, max-age=300"
 
 
 class TestUtcToday:

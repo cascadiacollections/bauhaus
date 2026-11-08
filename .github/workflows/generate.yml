@@ -10,7 +10,7 @@ on:
         default: met
         options: [met, artic, unsplash]
       overwrite:
-        description: "Republish today even if it already exists (breaks immutable caches)"
+        description: "Compatibility only: releases are immutable, so a published date fails instead of being republished"
         required: false
         type: boolean
         default: false

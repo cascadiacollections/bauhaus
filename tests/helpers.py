@@ -34,11 +34,19 @@ def _json(status: int, body, headers: dict[str, str] | None = None) -> FakeRespo
 class FakeGitHub:
     """An in-memory stand-in for the slice of the GitHub REST API upload.py uses.
 
+    Models a repository with *immutable releases* enabled, as the real one is:
+
+    * drafts own no tag, are invisible to GET /releases/tags/{tag}, and accept
+      asset uploads and deletes;
+    * a published release rejects asset uploads/deletes with 422;
+    * a tag used by a published release can never be published again, even
+      after that release is deleted ("burned").
+
     Plugged in as the requests session of a real GitHubReleases client, so the
     client's URL building, pagination, retries and status handling all run.
-    ``log`` records every mutating call as (method, tag, asset name) tuples, in
-    order, for assertions about sequencing. ``faults`` maps a predicate-ish
-    key (method, kind) to a list of statuses to answer before behaving normally.
+    ``log`` records every mutating call as (op, tag, asset name) tuples, in
+    order. ``faults`` maps (method, kind) to statuses/responses to answer
+    before behaving normally.
     """
 
     def __init__(self, repo: str = REPO, page_size: int = 100):
@@ -47,6 +55,7 @@ class FakeGitHub:
         self.releases: dict[int, dict] = {}
         self.assets: dict[int, dict] = {}  # id -> asset dict (+ "_release", "_data")
         self.tags: set[str] = set()
+        self.burned: set[str] = set()
         self.log: list[tuple[str, str, str | None]] = []
         self.calls: list[tuple[str, str]] = []
         self.faults: dict[tuple[str, str], list[int | FakeResponse]] = {}
@@ -58,20 +67,22 @@ class FakeGitHub:
         self._next_id += 1
         return self._next_id
 
-    def add_release(self, tag: str, **extra) -> dict:
+    def add_release(self, tag: str, draft: bool = False, **extra) -> dict:
         rid = self._id()
         release = {
             "id": rid,
             "tag_name": tag,
             "name": extra.get("name", tag),
             "body": extra.get("body", ""),
+            "draft": draft,
             "prerelease": extra.get("prerelease", True),
             "make_latest": extra.get("make_latest", "false"),
             "target_commitish": extra.get("target_commitish", "main"),
             "upload_url": f"{UPLOADS}/repos/{self.repo}/releases/{rid}/assets{{?name,label}}",
         }
         self.releases[rid] = release
-        self.tags.add(tag)
+        if not draft:
+            self.tags.add(tag)
         return release
 
     def add_asset(self, release: dict, name: str, data: bytes, content_type: str = "application/json"):
@@ -82,14 +93,22 @@ class FakeGitHub:
         }
         return self.assets[aid]
 
+    def add_day(self, day: str, dates: list[str] | None, draft: bool = False) -> dict:
+        """A day release, optionally carrying a dates.json snapshot."""
+        release = self.add_release(f"art-{day}", draft=draft)
+        if dates is not None:
+            self.add_asset(release, "dates.json", json.dumps({"dates": dates}).encode())
+        return release
+
     # -- inspection ----------------------------------------------------------
 
-    def release_by_tag(self, tag: str) -> dict | None:
-        return next((r for r in self.releases.values() if r["tag_name"] == tag), None)
+    def release_by_tag(self, tag: str, draft: bool | None = False) -> dict | None:
+        return next((r for r in self.releases.values()
+                     if r["tag_name"] == tag and (draft is None or r["draft"] == draft)), None)
 
     def files(self, tag: str) -> dict[str, bytes]:
         release = self.release_by_tag(tag)
-        assert release is not None, f"no release {tag}"
+        assert release is not None, f"no published release {tag}"
         return {a["name"]: a["_data"] for a in self.assets.values() if a["_release"] == release["id"]}
 
     def content_types(self, tag: str) -> dict[str, str]:
@@ -136,6 +155,16 @@ class FakeGitHub:
             return "release"
         return "repo"
 
+    def _page(self, items: list, path: str, query: dict) -> FakeResponse:
+        per_page = min(int(query.get("per_page", 30)), self.page_size)
+        page = int(query.get("page", 1))
+        chunk = items[(page - 1) * per_page: page * per_page]
+        headers_out = {}
+        if page * per_page < len(items):
+            nxt = urlencode({"per_page": query.get("per_page", 30), "page": page + 1})
+            headers_out["Link"] = f'<{API}{path}?{nxt}>; rel="next"'
+        return _json(200, chunk, headers_out)
+
     def _dispatch(self, method, host, path, query, body, data, headers) -> FakeResponse:
         prefix = f"/repos/{self.repo}"
         assert path.startswith(prefix), path
@@ -144,30 +173,48 @@ class FakeGitHub:
         if host == UPLOADS:
             m = re.fullmatch(r"/releases/(\d+)/assets", rest)
             assert m and method == "POST"
-            rid = int(m.group(1))
-            if rid not in self.releases:
+            release = self.releases.get(int(m.group(1)))
+            if release is None:
                 return _json(404, {"message": "Not Found"})
+            if not release["draft"]:
+                return _json(422, {"message": "Cannot upload assets to an immutable release."})
             name = query["name"]
-            if any(a["name"] == name and a["_release"] == rid for a in self.assets.values()):
+            if any(a["name"] == name and a["_release"] == release["id"] for a in self.assets.values()):
                 return _json(422, {"errors": [{"code": "already_exists"}]})
-            asset = self.add_asset(self.releases[rid], name, data, headers.get("Content-Type", ""))
-            self.log.append(("upload", self.releases[rid]["tag_name"], name))
+            asset = self.add_asset(release, name, data, headers.get("Content-Type", ""))
+            self.log.append(("upload", release["tag_name"], name))
             return _json(201, self._public(asset))
 
         if rest == "" and method == "GET":
             return _json(200, {"default_branch": "main"})
 
         if m := re.fullmatch(r"/releases/tags/(.+)", rest):
-            release = self.release_by_tag(m.group(1))
+            release = self.release_by_tag(m.group(1), draft=False)
             return _json(200, release) if release else _json(404, {"message": "Not Found"})
 
+        if rest == "/releases" and method == "GET":
+            newest_first = sorted(self.releases.values(), key=lambda r: r["id"], reverse=True)
+            return self._page(newest_first, path, query)
+
         if rest == "/releases" and method == "POST":
-            if self.release_by_tag(body["tag_name"]):
-                return _json(422, {"errors": [{"resource": "Release", "code": "already_exists",
-                                               "field": "tag_name"}]})
+            if not body.get("draft"):
+                raise AssertionError("upload.py must only ever create drafts")
             release = self.add_release(body["tag_name"], **body)
-            self.log.append(("create_release", body["tag_name"], None))
+            self.log.append(("create_draft", body["tag_name"], None))
             return _json(201, release)
+
+        if (m := re.fullmatch(r"/releases/(\d+)", rest)) and method == "PATCH":
+            release = self.releases.get(int(m.group(1)))
+            if release is None:
+                return FakeResponse(404)
+            if body.get("draft") is False and release["draft"]:
+                tag = release["tag_name"]
+                if tag in self.tags or tag in self.burned:
+                    return _json(422, {"errors": [{"code": "already_exists", "field": "tag_name"}]})
+                release.update(body)
+                self.tags.add(tag)
+                self.log.append(("publish", tag, None))
+            return _json(200, release)
 
         if (m := re.fullmatch(r"/releases/(\d+)", rest)) and method == "DELETE":
             release = self.releases.pop(int(m.group(1)), None)
@@ -175,42 +222,32 @@ class FakeGitHub:
                 return FakeResponse(404)
             for aid in [a for a, v in self.assets.items() if v["_release"] == release["id"]]:
                 del self.assets[aid]
+            if not release["draft"]:
+                self.burned.add(release["tag_name"])
             self.log.append(("delete_release", release["tag_name"], None))
             return FakeResponse(204)
 
         if (m := re.fullmatch(r"/git/refs/tags/(.+)", rest)) and method == "DELETE":
-            tag = m.group(1)
-            if tag not in self.tags:
-                return FakeResponse(422)
-            self.tags.discard(tag)
-            self.log.append(("delete_tag", tag, None))
-            return FakeResponse(204)
+            raise AssertionError("upload.py must never delete tags")
 
         if (m := re.fullmatch(r"/releases/(\d+)/assets", rest)) and method == "GET":
             rid = int(m.group(1))
             items = [self._public(a) for a in self.assets.values() if a["_release"] == rid]
-            per_page = min(int(query.get("per_page", 30)), self.page_size)
-            page = int(query.get("page", 1))
-            chunk = items[(page - 1) * per_page: page * per_page]
-            headers_out = {}
-            if page * per_page < len(items):
-                nxt = urlencode({"per_page": query.get("per_page", 30), "page": page + 1})
-                headers_out["Link"] = f'<{API}{path}?{nxt}>; rel="next"'
-            return _json(200, chunk, headers_out)
+            return self._page(items, path, query)
 
         if m := re.fullmatch(r"/releases/assets/(\d+)", rest):
             asset = self.assets.get(int(m.group(1)))
+            if asset is None:
+                return FakeResponse(404)
+            release = self.releases[asset["_release"]]
             if method == "GET":
-                if asset is None:
-                    return FakeResponse(404)
                 assert headers.get("Accept") == "application/octet-stream"
                 return FakeResponse(200, asset["_data"])
             if method == "DELETE":
-                if asset is None:
-                    return FakeResponse(404)
+                if not release["draft"]:
+                    return _json(422, {"message": "Cannot modify an immutable release."})
                 del self.assets[asset["id"]]
-                tag = self.releases[asset["_release"]]["tag_name"]
-                self.log.append(("delete_asset", tag, asset["name"]))
+                self.log.append(("delete_asset", release["tag_name"], asset["name"]))
                 return FakeResponse(204)
 
         raise AssertionError(f"unhandled fake GitHub call: {method} {host}{path}")

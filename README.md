@@ -61,7 +61,8 @@ GitHub Actions (daily, 4 AM UTC / 8 PM PT; retried at 10 AM UTC)
   4. Score the result (heuristics + NIMA) and record it in the metadata
   5. Generate AVIF + WebP variants for smaller files and faster loads
   6. Publish original + stylized (JPEG/AVIF/WebP) + metadata as a GitHub
-     release (tag art-YYYY-MM-DD), then update the art-index release
+     release (tag art-YYYY-MM-DD): built as a draft, then published
+     (immutable). Each day's release carries dates.json, the full date list
          |
   CF Worker API <-- GitHub release assets (edge-cached)
     GET /api/today      -> stylized image (AVIF/WebP/JPEG via content negotiation)
@@ -108,7 +109,7 @@ All `GET` endpoints also support `HEAD` — returns the same response headers (i
 | `/api/today*` | `public, max-age=300, s-maxage=3600, stale-while-revalidate=604800` — short browser TTL since "today" rolls over daily; the edge TTL stays below the 24h publish interval so a PoP cannot serve yesterday's artwork past the next run |
 | `/api/archive` | Same as `/api/today*` — the index gains an entry every morning, so it cannot be immutable |
 | `/api/feed.atom` | `public, max-age=3600` with a strong `ETag` and `Last-Modified`; conditional requests get a `304` from the `dates.json` index alone |
-| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the pipeline refuses to rewrite a date unless `--overwrite` is passed. The check runs twice, once before the fetch so a collision costs nothing and once immediately before the first upload, which is the one that closes the race |
+| `/api/YYYY-MM-DD*` | `public, max-age=31536000, s-maxage=31536000, immutable` — safe because publishing is write-once: the repo uses GitHub immutable releases, so a published date can never be rewritten (`--overwrite` fails with an explanation). Each day is assembled as a draft and published as the last step; the check runs before the fetch, before the draft, and again just before publishing |
 
 ### Archive index
 
@@ -314,7 +315,7 @@ just generate --alpha 0.5         # subtle style (0.0-1.0)
 just generate --any-subject       # disable landscape filter
 just generate --max-size 1536     # higher processing resolution
 just generate --no-score          # skip NIMA scoring (heuristics still run)
-just generate --overwrite         # republish a date that already has a release
+just generate --overwrite         # no-op guard: published dates are immutable
 just generate --skip-if-published # exit 0 instead of failing if the date exists
 
 # List all available recipes

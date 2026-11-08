@@ -189,12 +189,21 @@ class TestPreflight:
         assert h.assert_unpublished.call_args.args[0] == date(2026, 1, 2)
         assert h.upload.call_args.kwargs["today"] == date(2026, 1, 2)
 
-    def test_overwrite_skips_the_preflight(self):
-        """--overwrite means publish regardless; asking GitHub first proves nothing."""
+    def test_overwrite_still_runs_the_preflight(self):
+        """Immutable releases can't be overwritten, so --overwrite must fail early too."""
         with _Harness(["--overwrite"]) as h:
             main_mod.main()
-        assert h.assert_unpublished.call_count == 0
+        assert h.assert_unpublished.call_count == 1
+        assert h.assert_unpublished.call_args.kwargs["overwrite"] is True
         assert h.upload.call_count == 1
+
+    def test_overwrite_of_published_date_fails_before_work(self):
+        with _Harness(["--overwrite"]) as h:
+            h.assert_unpublished.side_effect = AlreadyPublishedError("immutable")
+            with pytest.raises(SystemExit) as exc:
+                main_mod.main()
+        assert exc.value.code == 1
+        assert h.upload.call_count == 0
 
     def test_dry_run_never_touches_r2(self, tmp_path):
         """A dry run has no GitHub token to preflight with."""

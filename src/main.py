@@ -347,8 +347,9 @@ def build_parser() -> argparse.ArgumentParser:
     # the other stands down for it. Passing both is an operator error.
     published = parser.add_mutually_exclusive_group()
     published.add_argument("--overwrite", action="store_true",
-                           help="Republish a date that already has a release "
-                                "(dates are served immutable — see docs)")
+                           help="Kept for compatibility. Releases are immutable, so a "
+                                "published date can never be republished; this fails "
+                                "with an explanation if the date is already published.")
     published.add_argument("--skip-if-published", action="store_true",
                            help="Exit 0 without generating when the date is already "
                                 "published, instead of failing. For scheduled runs, "
@@ -465,10 +466,12 @@ def main():
     today_str = today.isoformat()
 
     # 0. Preflight the write-once check — see upload.assert_unpublished().
-    if not args.dry_run and not args.overwrite:
+    # Runs with --overwrite too: releases are immutable, so a published date
+    # cannot be overwritten and the run should fail before the expensive work.
+    if not args.dry_run:
         t = time.perf_counter()
         try:
-            assert_unpublished(today)
+            assert_unpublished(today, overwrite=args.overwrite)
         except AlreadyPublishedError as exc:
             _exit_already_published(exc, today, args.skip_if_published)
         record_timing("preflight", t)
