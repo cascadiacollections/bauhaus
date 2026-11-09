@@ -46,10 +46,24 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
+      # /api/today.json exercises the deployed code *and* the art in GitHub
+      # Releases, so a 404 here usually means no day has been published in the
+      # Worker's 14-day window (Generate Daily Art is failing), not a bad
+      # deploy. Report the HTTP status and body so the two are told apart.
       - name: Post-deploy health check
         run: |
           sleep 3
-          STATUS=$(curl -sf --retry 2 --retry-delay 2 --max-time 10 "${{ env.WORKER_URL }}/api/today.json" | python3 -c "import sys,json; print(json.load(sys.stdin).get('license',''))" || echo "FAILED")
+          BODY="$RUNNER_TEMP/today.json"
+          CODE=$(curl -s -o "$BODY" -w '%{http_code}' --retry 2 --retry-delay 2 --max-time 10 \
+            "${WORKER_URL}/api/today.json" || echo "000")
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Health check failed — /api/today.json returned HTTP $CODE: $(head -c 300 "$BODY" 2>/dev/null)"
+            if [ "$CODE" = "404" ]; then
+              echo "::error::The Worker is up but has no artwork to serve; check the Generate Daily Art workflow."
+            fi
+            exit 1
+          fi
+          STATUS=$(python3 -c "import sys,json; print(json.load(open(sys.argv[1])).get('license',''))" "$BODY" || echo "unparseable JSON")
           if [ "$STATUS" != "CC0-1.0" ] && [ "$STATUS" != "Unsplash License" ]; then
             echo "::error::Health check failed — unexpected license: $STATUS"
             exit 1
