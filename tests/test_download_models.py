@@ -9,6 +9,7 @@ of the Actions cache.
 import hashlib
 import importlib.util
 import sys
+from email.message import Message
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -151,7 +152,7 @@ class TestDownloadModels:
             calls.append(url)
             if len(calls) == 1:
                 Path(target).write_bytes(b"partial")
-                raise HTTPError(url, 504, "Gateway Time-out", {}, None)
+                raise HTTPError(url, 504, "Gateway Time-out", Message(), None)
             Path(target).write_bytes(payload)
 
         monkeypatch.setattr(dm, "urlretrieve", fake_retrieve)
@@ -180,7 +181,7 @@ class TestDownloadModels:
 
         def fake_retrieve(url, target):
             calls.append(url)
-            raise HTTPError(url, 404, "Not Found", {}, None)
+            raise HTTPError(url, 404, "Not Found", Message(), None)
 
         monkeypatch.setattr(dm, "urlretrieve", fake_retrieve)
         with pytest.raises(RuntimeError, match="HTTP Error 404"):
