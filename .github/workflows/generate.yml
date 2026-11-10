@@ -84,8 +84,8 @@ jobs:
     needs: route
     runs-on: ${{ fromJSON(needs.route.outputs.runs-on) }}
     timeout-minutes: 20
-    # Publishing creates the day's release (tag art-YYYY-MM-DD) and rewrites
-    # the art-index release's assets, both through GITHUB_TOKEN.
+    # Publishing creates the day's release (tag art-YYYY-MM-DD) through
+    # GITHUB_TOKEN. There is no index release any more (see src/upload.py).
     permissions:
       contents: write
     # Job-level env: the `secrets` context is not available in step-level `if:`
@@ -113,8 +113,12 @@ jobs:
       # Keyed on the download script so that changing a pinned checksum (or the
       # release URL) evicts weights cached under the old pins. A constant key
       # can never invalidate, which would pin a bad cache entry forever.
+      # Restore and save are split: actions/cache only saves when the whole
+      # job succeeds, so a run that failed after downloading (as every run on
+      # 2026-11-08 did) cached nothing and the next run re-downloaded ~600 MB.
       - if: needs.route.outputs.self-hosted != 'true'
-        uses: actions/cache@v6
+        id: models-cache
+        uses: actions/cache/restore@v6
         with:
           path: models/weights
           key: adain-models-${{ hashFiles('models/download_models.py') }}
@@ -132,6 +136,13 @@ jobs:
 
       - name: Download models
         run: uv run --script models/download_models.py
+
+      # Right after the verified download, before anything else can fail.
+      - if: needs.route.outputs.self-hosted != 'true' && steps.models-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: models/weights
+          key: ${{ steps.models-cache.outputs.cache-primary-key }}
 
       - name: Import GPG key
         if: env.GPG_PRIVATE_KEY != ''

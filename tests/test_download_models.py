@@ -9,8 +9,10 @@ of the Actions cache.
 import hashlib
 import importlib.util
 import sys
+from email.message import Message
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -78,6 +80,9 @@ class TestDownloadModels:
         # The real conversion needs the NIMA .h5, which these fixtures do not
         # write; the conversion itself is covered by TestConvertNima.
         monkeypatch.setattr(dm, "convert_nima", lambda weights_dir: None)
+        # Retries back off for real seconds; record the waits instead.
+        self.sleeps: list[float] = []
+        monkeypatch.setattr(dm, "_sleep", self.sleeps.append)
 
     def test_valid_existing_file_is_not_redownloaded(self, tmp_path, monkeypatch):
         payload = b"good-weights"
@@ -136,6 +141,53 @@ class TestDownloadModels:
         with pytest.raises(RuntimeError, match="Failed to download"):
             dm.download_models(tmp_path)
         assert not (tmp_path / "decoder.pth").exists()
+
+    def test_transient_http_error_is_retried(self, tmp_path, monkeypatch):
+        """The 2026-11-08 failure: one 504 from the release CDN."""
+        payload = b"fresh-weights"
+        self._pin(monkeypatch, payload)
+        calls = []
+
+        def fake_retrieve(url, target):
+            calls.append(url)
+            if len(calls) == 1:
+                Path(target).write_bytes(b"partial")
+                raise HTTPError(url, 504, "Gateway Time-out", Message(), None)
+            Path(target).write_bytes(payload)
+
+        monkeypatch.setattr(dm, "urlretrieve", fake_retrieve)
+        dm.download_models(tmp_path)
+        assert len(calls) == 2
+        assert self.sleeps == [dm._RETRY_DELAYS[0]]
+        assert (tmp_path / "decoder.pth").read_bytes() == payload
+
+    def test_persistent_network_failure_gives_up_after_every_retry(self, tmp_path, monkeypatch):
+        self._pin(monkeypatch, b"never-arrives")
+        calls = []
+
+        def fake_retrieve(url, target):
+            calls.append(url)
+            raise URLError("timed out")
+
+        monkeypatch.setattr(dm, "urlretrieve", fake_retrieve)
+        with pytest.raises(RuntimeError, match="Failed to download"):
+            dm.download_models(tmp_path)
+        assert len(calls) == len(dm._RETRY_DELAYS) + 1
+        assert self.sleeps == list(dm._RETRY_DELAYS)
+
+    def test_client_error_is_not_retried(self, tmp_path, monkeypatch):
+        self._pin(monkeypatch, b"gone")
+        calls = []
+
+        def fake_retrieve(url, target):
+            calls.append(url)
+            raise HTTPError(url, 404, "Not Found", Message(), None)
+
+        monkeypatch.setattr(dm, "urlretrieve", fake_retrieve)
+        with pytest.raises(RuntimeError, match="HTTP Error 404"):
+            dm.download_models(tmp_path)
+        assert len(calls) == 1
+        assert self.sleeps == []
 
 
 class TestConvertNima:

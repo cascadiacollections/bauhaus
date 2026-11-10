@@ -20,8 +20,9 @@ match, re-downloaded when they do not. Safe to run before every generation.
 
 import hashlib
 import sys
+import time
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlretrieve
 
 _ADAIN_BASE = "https://github.com/naoto0804/pytorch-AdaIN/releases/download/v0.0.0"
@@ -65,6 +66,42 @@ NIMA_CONVERTED = "nima_mobilenet.npz"
 _SOURCE_SHA_KEY = "_source_sha256"
 
 _CHUNK = 1024 * 1024
+
+# Seconds to wait before each retry of a failed download. GitHub's release
+# CDN answers the occasional 5xx (a 504 failed the 2026-11-08 10:05 UTC run),
+# and the weights cache is only saved by a job that gets that far, so one
+# transient error used to cost the whole day's generation.
+_RETRY_DELAYS = (5, 15, 45)
+_sleep = time.sleep
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for errors worth retrying: 5xx, 429 and network failures.
+
+    Any other HTTP status (a 404 from a moved asset, say) will not fix itself.
+    """
+    if isinstance(exc, HTTPError):
+        return exc.code >= 500 or exc.code == 429
+    return True
+
+
+def _fetch(url: str, dest: Path) -> None:
+    """urlretrieve() with retries on transient failures.
+
+    A failed attempt's partial file is removed before the next one, and on
+    final failure, so nothing half-written is left for the checksum pass.
+    """
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        try:
+            urlretrieve(url, dest)  # noqa: S310 — trusted fixed URL, verified by the caller
+            return
+        except (URLError, OSError) as exc:
+            dest.unlink(missing_ok=True)
+            if attempt == len(_RETRY_DELAYS) or not _is_transient(exc):
+                raise
+            delay = _RETRY_DELAYS[attempt]
+            print(f"⚠ {dest.name}: {exc} — retrying in {delay}s", file=sys.stderr)
+            _sleep(delay)
 
 
 def sha256_file(path: Path) -> str:
@@ -168,9 +205,8 @@ def download_models(weights_dir: Path = WEIGHTS_DIR) -> None:
 
         print(f"Downloading {name}...")
         try:
-            urlretrieve(url, dest)  # noqa: S310 — trusted fixed URL, verified below
+            _fetch(url, dest)
         except (URLError, OSError) as exc:
-            dest.unlink(missing_ok=True)  # remove partial download
             raise RuntimeError(f"Failed to download {name}: {exc}") from exc
 
         actual = sha256_file(dest)
