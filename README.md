@@ -335,6 +335,13 @@ podman run --rm -v "$PWD/output:/app/output" --env-file .env bauhaus --dry-run
 
 Use a rootless Podman setup and a writable bind mount for `output/` if you want to keep generated files on the host.
 
+`docker-build`/`docker-run` (aliased as `container-build`/`container-run`) use
+Apple's [`container`](https://github.com/apple/container) CLI on macOS and
+`docker` elsewhere; set `CONTAINER_ENGINE` to override. On macOS this is a
+`--dry-run` convenience only: the image carries roughly 5 GB of CUDA wheels and
+there is no NVIDIA GPU inside a `container` VM, so real generation belongs on a
+Linux/CUDA host.
+
 ### Worker
 
 ```bash
