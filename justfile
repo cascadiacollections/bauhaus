@@ -1,5 +1,9 @@
 # Bauhaus — Daily Stylized Art
 
+# Container runtime for docker-build/docker-run: Apple's `container` CLI on
+# macOS, docker elsewhere. Override with CONTAINER_ENGINE=podman (etc.).
+ENGINE := env("CONTAINER_ENGINE", if os() == "macos" { "container" } else { "docker" })
+
 # Default recipe: list available commands
 default:
     @just --list
@@ -41,13 +45,16 @@ benchmark-generate *ARGS:
 benchmark-gate metrics='output/benchmark/metrics.json' max_total='210' max_style_transfer='120':
     uv run python src/benchmark_gate.py --metrics {{ metrics }} --max-total {{ max_total }} --max-style-transfer {{ max_style_transfer }}
 
-# Build Docker image
+# Build the container image with ENGINE (docker; `container` on macOS)
 docker-build:
-    docker build -t bauhaus .
+    {{ ENGINE }} build -t bauhaus .
 
-# Run Docker container
+# Run the container image (dry run) with ENGINE (docker; `container` on macOS)
 docker-run *ARGS:
-    docker run --rm -v ./output:/app/output bauhaus --dry-run {{ ARGS }}
+    {{ ENGINE }} run --rm -v "{{ justfile_directory() }}/output:/app/output" bauhaus --dry-run {{ ARGS }}
+
+alias container-build := docker-build
+alias container-run := docker-run
 
 # Start Worker dev server
 worker-dev:
