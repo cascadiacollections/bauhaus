@@ -91,9 +91,7 @@ class NimaMobileNet(nn.Module):
         """
         return nn.functional.pad(x, (0, 1, 0, 1) if stride == 2 else (1, 1, 1, 1))
 
-    # nn.Module declares forward as a plain Callable attribute, so ty reads the
-    # standard method override as narrowing what the attribute accepts.
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # ty: ignore[invalid-mutable-override]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Return the 10-bin rating distribution (softmax over the AVA scale)."""
         x = nn.functional.relu6(self.conv1_bn(self.conv1(self._pad_same(x, 2))))
 
