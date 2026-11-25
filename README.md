@@ -9,6 +9,7 @@
 [![Output: Source-dependent](https://img.shields.io/badge/Output-Source--dependent-yellow.svg)](#licensing)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776ab.svg)](https://python.org)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cascadiacollections/bauhaus/badge)](https://scorecard.dev/viewer/?uri=github.com/cascadiacollections/bauhaus)
 
 Daily stylized art from public domain museum collections.
 
