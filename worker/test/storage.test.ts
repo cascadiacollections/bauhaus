@@ -761,6 +761,125 @@ describe("routes over GitHub Releases", () => {
     expect(xml.indexOf(`Art ${D}`)).toBeLessThan(xml.indexOf(`Art ${PREV}`));
   });
 
+  it("serves a repeat archive and a conditional feed without downloading the index again", async () => {
+    const { fetchMock } = await setup();
+    const { ctx, flush } = makeCtx();
+
+    const archive = await worker.fetch(req("/api/archive"), env(), ctx);
+    expect(await archive.json()).toEqual({ dates: [D, PREV], count: 2, total: 2 });
+    expect(archive.headers.get("Cache-Control")).toBe(TODAY_CACHE);
+    await flush();
+    // One probe of today's release plus its dates.json. Not a walk of metadata/.
+    expect(urls(fetchMock)).toEqual([
+      `${BASE}/art-${D}/objects.json`,
+      `${BASE}/art-${D}/dates.json`,
+    ]);
+
+    const archiveAgain = await worker.fetch(req("/api/archive"), env(), ctx);
+    expect(await archiveAgain.json()).toEqual({ dates: [D, PREV], count: 2, total: 2 });
+    expect(urls(fetchMock)).toEqual([
+      `${BASE}/art-${D}/objects.json`,
+      `${BASE}/art-${D}/dates.json`,
+    ]);
+
+    const feed = await worker.fetch(req("/api/feed.atom"), env(), ctx);
+    const etag = feed.headers.get("ETag");
+    expect(feed.status).toBe(200);
+    expect(feed.headers.get("Cache-Control")).toBe("public, max-age=3600");
+    expect(await feed.text()).toContain(`Art ${D}`);
+    await flush();
+    const warmed = urls(fetchMock);
+    expect(warmed).toContain(`${BASE}/art-${D}/metadata.json`);
+    expect(warmed).toContain(`${BASE}/art-${PREV}/metadata.json`);
+    expect(warmed.some((u) => u.endsWith(".sig"))).toBe(false);
+
+    const conditional = await worker.fetch(
+      req("/api/feed.atom", { headers: { "If-None-Match": `W/${etag}` } }),
+      env(),
+      ctx,
+    );
+    expect(conditional.status).toBe(304);
+    expect(conditional.headers.get("ETag")).toBe(etag);
+    expect(conditional.headers.get("Cache-Control")).toBe("public, max-age=3600");
+    expect(await conditional.text()).toBe("");
+    expect(urls(fetchMock)).toEqual(warmed);
+
+    // latest.json is the same probe the index used, and it still names today.
+    const today = await worker.fetch(req("/api/today.json"), env(), ctx);
+    expect(((await today.json()) as { date: string }).date).toBe(D);
+    expect(urls(fetchMock)).toEqual(warmed);
+  });
+
+  it("shows the 04:00 publish on the archive and feed inside five minutes", async () => {
+    vi.setSystemTime(Date.parse("2026-11-08T03:59:00Z"));
+    const files = await buildGitHub(Object.fromEntries([day(PREV, { dates: [PREV] })]));
+    const fetchMock = stubFetch(files);
+    const { ctx, flush } = makeCtx();
+
+    const before = await worker.fetch(req("/api/archive"), env(), ctx);
+    expect(await before.json()).toEqual({ dates: [PREV], count: 1, total: 1 });
+    const feedBefore = await worker.fetch(req("/api/feed.atom"), env(), ctx);
+    const etagBefore = feedBefore.headers.get("ETag");
+    expect(feedBefore.status).toBe(200);
+    await feedBefore.text();
+    await flush();
+    const callsWhileHidden = fetchMock.mock.calls.length;
+
+    for (const [url, body] of await buildGitHub(
+      Object.fromEntries([day(D, { dates: [D, PREV], sig: true })]),
+    )) {
+      files.set(url, body);
+    }
+
+    // The pre-publish miss is still cached, so a poll does not refetch the index.
+    const hidden = await worker.fetch(req("/api/archive"), env(), ctx);
+    expect(await hidden.json()).toEqual({ dates: [PREV], count: 1, total: 1 });
+    const hiddenFeed = await worker.fetch(
+      req("/api/feed.atom", { headers: { "If-None-Match": etagBefore! } }),
+      env(),
+      ctx,
+    );
+    expect(hiddenFeed.status).toBe(304);
+    expect(hiddenFeed.headers.get("ETag")).toBe(etagBefore);
+    expect(fetchMock.mock.calls.length).toBe(callsWhileHidden);
+
+    vi.setSystemTime(Date.now() + (MISSING_TTL + 1) * 1000);
+    expect(Date.now()).toBeLessThanOrEqual(Date.parse("2026-11-08T04:05:00Z"));
+
+    const visible = await worker.fetch(req("/api/archive"), env(), ctx);
+    const visibleBody = (await visible.json()) as Record<string, unknown>;
+    expect(visibleBody).toEqual({ dates: [D, PREV], count: 2, total: 2 });
+    expect(visibleBody).not.toHaveProperty("truncated");
+    expect(visible.headers.get("Cache-Control")).toBe(TODAY_CACHE);
+    await flush();
+
+    const feed = await worker.fetch(
+      req("/api/feed.atom", { headers: { "If-None-Match": etagBefore! } }),
+      env(),
+      ctx,
+    );
+    expect(feed.status).toBe(200);
+    expect(feed.headers.get("ETag")).not.toBe(etagBefore);
+    const xml = await feed.text();
+    expect(xml.indexOf(`Art ${D}`)).toBeLessThan(xml.indexOf(`Art ${PREV}`));
+    const etagAfter = feed.headers.get("ETag")!;
+    await flush();
+    const callsAfterPublish = fetchMock.mock.calls.length;
+
+    const again = await worker.fetch(
+      req("/api/feed.atom", { headers: { "If-None-Match": etagAfter } }),
+      env(),
+      ctx,
+    );
+    expect(again.status).toBe(304);
+    expect(again.headers.get("ETag")).toBe(etagAfter);
+    expect(await again.text()).toBe("");
+    expect(fetchMock.mock.calls.length).toBe(callsAfterPublish);
+
+    const today = await worker.fetch(req("/api/today.json"), env(), ctx);
+    expect(((await today.json()) as { date: string }).date).toBe(D);
+  });
+
   it("reports nothing published when the releases do not exist yet", async () => {
     stubFetch(new Map());
     expect((await worker.fetch(req("/api/today"), env())).status).toBe(404);

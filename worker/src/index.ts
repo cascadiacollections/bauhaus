@@ -378,13 +378,15 @@ const ARCHIVE_DEFAULT_LIMIT = 100;
 const ARCHIVE_MAX_LIMIT = 1000;
 
 /**
- * Cap on R2 list() round trips per archive request.
+ * Cap on list() round trips per archive request.
  *
- * The whole `metadata/` prefix is drained so the newest dates can be served
- * first — R2 lists ascending, and the newest page is the one every caller
- * wants. At one publish per day and 1000 keys per call, this bounds the walk
- * at roughly 68 years of art while stopping a pathologically large bucket
- * (a stray prefix, a bulk import) from pinning the Worker.
+ * A paginating bucket is drained so the newest dates can be served first:
+ * list order is ascending, and the newest page is the one every caller wants.
+ * At one publish per day and 1000 keys per call, this bounds the walk at
+ * roughly 68 years of art while stopping a pathologically large bucket
+ * (a stray prefix, a bulk import) from pinning the Worker. The production
+ * bucket does not paginate. It returns the latest day's dates.json as one
+ * page, so a normal request makes a single call.
  */
 const ARCHIVE_MAX_LIST_CALLS = 25;
 
@@ -437,8 +439,10 @@ export function parseArchiveQuery(url: URL): ArchiveQuery | { error: string } {
 /**
  * Every published date, oldest first.
  *
- * R2 lists keys in lexicographic order and the keys are `metadata/YYYY/MM/DD`,
- * so lexicographic order is already chronological order — no sorting needed.
+ * Keys are `metadata/YYYY/MM/DD.json`, so lexicographic order is chronological
+ * and no sorting is needed. Production reads this from the latest day's
+ * dates.json (one cached object, signature keys left out). A bucket that
+ * paginates is walked until it ends or ARCHIVE_MAX_LIST_CALLS is hit.
  */
 async function listPublishedDates(
   bucket: R2Bucket,
@@ -576,9 +580,12 @@ async function loadFeedEntries(bucket: R2Bucket, dates: string[]): Promise<FeedE
 /**
  * GET|HEAD /api/feed.atom — the newest FEED_ENTRY_LIMIT days as Atom 1.0.
  *
- * Conditional requests are the common case for a feed, so they are answered
- * as cheaply as possible: If-None-Match costs one R2 list, If-Modified-Since
- * one list plus the newest day's metadata. Only a full 200 reads every entry.
+ * Conditional requests are the common case, so they stay on the date index.
+ * If-None-Match compares the ETag from that index and reads no metadata.
+ * If-Modified-Since also reads the newest day's metadata. Only a full 200
+ * reads every entry. The index is the latest day's dates.json, stored in the
+ * colo cache with the other release assets, so a repeat poll does not
+ * download it again.
  */
 async function serveFeed(request: Request, bucket: R2Bucket, url: URL, isHead: boolean): Promise<Response> {
   const listing = await listPublishedDates(bucket);
