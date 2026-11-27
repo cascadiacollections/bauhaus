@@ -79,12 +79,12 @@ class TestSignMetadataDict:
         assert "--local-user" in cmd
         assert "DEADBEEF" in cmd
 
-    def test_includes_passphrase_in_command(self):
-        """When passphrase is provided, --passphrase and --pinentry-mode loopback should be used."""
+    def test_passphrase_goes_to_stdin_not_argv(self):
+        """The passphrase must not appear in the process list."""
         calls_made = []
 
         def _fake_run(cmd, **kwargs):
-            calls_made.append(cmd)
+            calls_made.append((cmd, kwargs.get("input")))
             out_idx = cmd.index("--output") + 1
             import pathlib
             pathlib.Path(cmd[out_idx]).write_bytes(_FAKE_SIG)
@@ -95,11 +95,14 @@ class TestSignMetadataDict:
         with patch("sign_metadata.subprocess.run", side_effect=_fake_run):
             sign_metadata(_SAMPLE_METADATA, passphrase="s3cr3t")
 
-        cmd = calls_made[0]
-        assert "--passphrase" in cmd
-        assert "s3cr3t" in cmd
+        cmd, stdin = calls_made[0]
+        assert "--passphrase" not in cmd
+        assert "s3cr3t" not in cmd
+        assert "--passphrase-fd" in cmd
+        assert cmd[cmd.index("--passphrase-fd") + 1] == "0"
         assert "--pinentry-mode" in cmd
         assert "loopback" in cmd
+        assert stdin == b"s3cr3t\n"
 
     def test_returns_none_on_nonzero_exit(self):
         """Should return None and not raise when GPG exits non-zero."""

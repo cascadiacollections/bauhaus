@@ -42,14 +42,20 @@ def sign_metadata(
                 "--output", str(sig_path),
                 "--detach-sign",
             ]
+            # The passphrase goes on stdin, not argv. --passphrase puts it in
+            # the process list, which on the long-lived self-hosted runner is
+            # visible to anything else on the box.
+            gpg_input = None
             if passphrase:
-                cmd += ["--passphrase", passphrase, "--pinentry-mode", "loopback"]
+                cmd += ["--passphrase-fd", "0", "--pinentry-mode", "loopback"]
+                gpg_input = passphrase.encode() + b"\n"
             if key_id:
                 cmd += ["--local-user", key_id]
             cmd.append(str(meta_path))
 
             result = subprocess.run(
                 cmd,
+                input=gpg_input,
                 capture_output=True,
                 timeout=30,
             )
