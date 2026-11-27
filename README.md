@@ -206,7 +206,7 @@ If the preferred format is missing, it falls back to JPEG.
 
 All image responses include a `Vary: Accept` header for correct caching.
 
-The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Use the `format` query parameter above to override it explicitly; an unrecognised value is rejected with `400` rather than silently negotiated.
+The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Quality values count: `image/avif;q=0` does not select AVIF, and the highest `q` wins. Equal `q` prefers AVIF, then WebP, then JPEG. An `Accept` of `*/*` (curl, the wallpaper one-liners) still gets JPEG. Use the `format` query parameter above to override negotiation explicitly; an unrecognised value is rejected with `400` rather than silently negotiated.
 
 ## Telemetry
 

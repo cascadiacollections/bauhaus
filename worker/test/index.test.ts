@@ -158,6 +158,32 @@ describe("negotiateFormat", () => {
     const url = new URL(req.url);
     expect(negotiateFormat(req, url)).toBe("webp");
   });
+
+  it("does not select a format the client rejected with q=0", () => {
+    const req = makeRequest("/api/2025-01-01", {
+      accept: "image/avif;q=0, image/webp, image/jpeg",
+    });
+    expect(negotiateFormat(req, new URL(req.url))).toBe("webp");
+  });
+
+  it("prefers the format with the higher q, not the one named first in our list", () => {
+    const req = makeRequest("/api/2025-01-01", {
+      accept: "image/avif;q=0.5, image/jpeg;q=1",
+    });
+    expect(negotiateFormat(req, new URL(req.url))).toBe("jpeg");
+  });
+
+  it("keeps JPEG for */* so curl and the wallpaper one-liners still get a JPEG", () => {
+    const req = makeRequest("/api/2025-01-01", { accept: "*/*" });
+    expect(negotiateFormat(req, new URL(req.url))).toBe("jpeg");
+  });
+
+  it("breaks equal q toward AVIF, then WebP, then JPEG", () => {
+    const req = makeRequest("/api/2025-01-01", {
+      accept: "image/jpeg;q=0.8, image/webp;q=0.8, image/avif;q=0.8",
+    });
+    expect(negotiateFormat(req, new URL(req.url))).toBe("avif");
+  });
 });
 
 // ---------------------------------------------------------------------------

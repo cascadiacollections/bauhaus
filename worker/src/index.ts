@@ -79,17 +79,51 @@ export function hasInvalidFormat(url: URL): boolean {
   return !FORMAT_PARAMS.has(param.toLowerCase());
 }
 
+const NEGOTIATED_FORMATS: readonly ImageFormat[] = ["avif", "webp", "jpeg"];
+
+/**
+ * q-value of an explicitly named type, or null when the header never names it.
+ *
+ * A wildcard (`*` / `*`) or `image/` + `*` is not a match. Clients that send
+ * only those — curl, and the wallpaper one-liners — get JPEG, which is what
+ * they can decode.
+ * The first mention wins, so a later duplicate cannot raise a `q=0`.
+ */
+function explicitAcceptQuality(accept: string, mime: string): number | null {
+  let found: number | null = null;
+  for (const part of accept.split(",")) {
+    const [typeRaw, ...params] = part.split(";");
+    if (typeRaw.trim().toLowerCase() !== mime) continue;
+    let q = 1;
+    for (const param of params) {
+      const match = /^\s*q\s*=\s*([0-9]*\.?[0-9]+)\s*$/i.exec(param);
+      if (!match) continue;
+      const parsed = Number(match[1]);
+      if (Number.isFinite(parsed)) q = Math.min(1, Math.max(0, parsed));
+    }
+    if (found === null) found = q;
+  }
+  return found;
+}
+
 export function negotiateFormat(request: Request, url: URL): ImageFormat {
   const param = url.searchParams.get("format")?.toLowerCase();
-  if (param === "avif") return "avif";
-  if (param === "webp") return "webp";
-  if (param === "jpeg") return "jpeg";
+  if (param === "avif" || param === "webp" || param === "jpeg") return param;
 
-  // ?format=auto or absent → negotiate via Accept header
+  // ?format=auto or absent → negotiate via Accept. A q of 0 means "not
+  // acceptable"; includes("image/avif") used to treat `image/avif;q=0` as a
+  // request for AVIF, and it ignored a client that preferred JPEG.
   const accept = request.headers.get("Accept") ?? "";
-  if (accept.includes("image/avif")) return "avif";
-  if (accept.includes("image/webp")) return "webp";
-  return "jpeg";
+  let best: ImageFormat | null = null;
+  let bestQ = 0;
+  for (const format of NEGOTIATED_FORMATS) {
+    const q = explicitAcceptQuality(accept, FORMAT_CONTENT_TYPE[format]);
+    // Equal q keeps the earlier format: AVIF, then WebP, then JPEG.
+    if (q === null || q <= bestQ) continue;
+    best = format;
+    bestQ = q;
+  }
+  return best ?? "jpeg";
 }
 
 function datePath(dateStr: string): string {
