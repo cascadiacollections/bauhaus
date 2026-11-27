@@ -208,6 +208,8 @@ All image responses include a `Vary: Accept` header for correct caching.
 
 The Worker uses `Accept` header content negotiation for the base image endpoints. If the client sends `Accept: image/avif`, the AVIF variant is returned (falling back to JPEG if unavailable). Use the `format` query parameter above to override it explicitly; an unrecognised value is rejected with `400` rather than silently negotiated.
 
+Published JPEGs embed only a title, artist, and copyright. Source EXIF — GPS, camera serial numbers, maker notes — is not copied into `original.jpg` or the stylized image. Orientation is applied to the pixels first, so dropping that tag does not display the photo sideways. `?strip=true` removes the attribution tags as well.
+
 ## Telemetry
 
 Two first-party RUM endpoints persist to [Workers Analytics Engine](https://developers.cloudflare.com/analytics/analytics-engine/). Only requests from allowed origins (configured via `ALLOWED_ORIGINS`) are accepted. The Beacon API is used on the client side — both endpoints only accept `POST`.

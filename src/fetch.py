@@ -6,13 +6,11 @@ import re
 import sys
 import time
 from dataclasses import asdict, dataclass
-from io import BytesIO
 from typing import Protocol
 
 import requests
-from PIL import Image
 
-from quality import MIN_ASPECT_RATIO, MIN_LANDSCAPE_ASPECT_RATIO, score_image
+from quality import MIN_ASPECT_RATIO, MIN_LANDSCAPE_ASPECT_RATIO, open_rgb, score_image
 
 NSFW_PATTERN = re.compile(
     r"\b(nude|naked|bather|bathers|bathing|odalisque|venus|cupid|"
@@ -177,7 +175,7 @@ def _check_quality(image_bytes: bytes, landscape_orientation: bool = False) -> t
     Returns (passed, reason).  If passed is True, reason is empty.
     """
     try:
-        img = Image.open(BytesIO(image_bytes)).convert("RGB")
+        img = open_rgb(image_bytes)
     except Exception:
         return False, "could not decode image"
     min_ratio = MIN_LANDSCAPE_ASPECT_RATIO if landscape_orientation else MIN_ASPECT_RATIO
