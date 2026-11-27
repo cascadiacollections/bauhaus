@@ -5,6 +5,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 from PIL import Image
+from PIL.ExifTags import IFD
 
 from main import (
     build_license_details,
@@ -367,6 +368,50 @@ class TestExtractExif:
         for key, val in result.items():
             assert isinstance(key, str)
             assert isinstance(val, str)
+
+
+class TestEmbedExifDoesNotCopySourceTags:
+    """The public JPEG used to inherit the source file's EXIF, GPS included."""
+
+    @staticmethod
+    def _source_with_private_tags() -> bytes:
+        img = Image.new("RGB", (64, 48), (12, 34, 56))
+        exif = img.getexif()
+        exif[0x0112] = 6  # Orientation
+        gps = exif.get_ifd(IFD.GPSInfo)
+        gps[1] = "N"
+        gps[2] = (37.0, 46.0, 30.0)
+        gps[3] = "W"
+        gps[4] = (122.0, 25.0, 10.0)
+        exif.get_ifd(IFD.Exif)[0xA431] = "BODY-SERIAL-LEAK"
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=90, exif=exif.tobytes())
+        return buf.getvalue()
+
+    def test_published_jpeg_keeps_attribution_and_drops_gps_and_serial(self):
+        from quality import open_rgb
+
+        source = self._source_with_private_tags()
+        assert b"BODY-SERIAL-LEAK" in source
+        published = embed_exif(
+            open_rgb(source),
+            {"title": "Keep Me", "artist": "Ada", "license": "CC0-1.0"},
+        )
+        assert b"BODY-SERIAL-LEAK" not in published
+        with Image.open(BytesIO(published)) as img:
+            exif = img.getexif()
+            assert exif.get(0x010E) == "Keep Me"
+            assert exif.get(0x013B) == "Ada"
+            assert not exif.get_ifd(IFD.GPSInfo)
+            assert 0xA431 not in exif.get_ifd(IFD.Exif)
+            # Orientation 6 would rotate the already-upright pixels again.
+            assert exif.get(0x0112) in (None, 1)
+
+    def test_metadata_json_does_not_publish_orientation_or_serial(self):
+        result = extract_exif(self._source_with_private_tags())
+        assert "Orientation" not in result
+        assert "BodySerialNumber" not in result
+        assert "GPSInfo" not in result
 
 
 class TestStripExif:

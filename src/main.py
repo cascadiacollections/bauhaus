@@ -20,7 +20,7 @@ from PIL.ExifTags import TAGS as EXIF_TAGS
 
 from fetch import fetch_artwork
 from postprocess import postprocess
-from quality import aesthetic_score, score_image
+from quality import aesthetic_score, open_rgb, score_image
 from sign_metadata import sign_metadata
 from stylize import StyleTransfer, gradient_alpha_mask, luminance_alpha_mask
 from upload import (
@@ -85,9 +85,13 @@ PUBLISHED_EXIF_TAGS = frozenset({
 })
 
 # Serial numbers identify a specific physical camera and can link otherwise
-# unrelated photographs to one owner. Kept out of the allowlist above; listed
-# here so the omission reads as deliberate rather than forgotten.
-_DELIBERATELY_OMITTED = frozenset({"BodySerialNumber", "LensSerialNumber", "CameraOwnerName"})
+# unrelated photographs to one owner. Orientation is applied to the pixels in
+# open_rgb and then dropped; publishing the source tag would tell a client to
+# rotate an image that is already upright. Listed here so the omission reads
+# as deliberate rather than forgotten.
+_DELIBERATELY_OMITTED = frozenset({
+    "BodySerialNumber", "LensSerialNumber", "CameraOwnerName", "Orientation",
+})
 PUBLISHED_EXIF_TAGS = PUBLISHED_EXIF_TAGS - _DELIBERATELY_OMITTED
 
 
@@ -134,12 +138,18 @@ def strip_exif(image: Image.Image) -> bytes:
 def embed_exif(image: Image.Image, metadata: dict, progressive: bool = False) -> bytes:
     """Encode image as JPEG with EXIF metadata (title, artist, copyright).
 
+    Starts from an empty EXIF directory. ``image.getexif()`` would copy the
+    source file's tags — GPS, body serial, maker notes — into an object served
+    at ``/api/<date>/original``. The metadata JSON already allowlists tags;
+    the JPEG has to do the same. Callers pass an image from ``open_rgb``,
+    which has already baked Orientation into the pixels.
+
     Args:
         image: PIL Image to encode.
         metadata: Dict with title, artist/photographer, license info.
         progressive: If True, encode as progressive JPEG for faster perceived load.
     """
-    exif = image.getexif()
+    exif = Image.Exif()
     exif[_EXIF_IMAGE_DESCRIPTION] = metadata.get("title", "")
     artist = metadata.get("photographer") or metadata.get("artist", "")
     exif[_EXIF_ARTIST] = artist
@@ -253,7 +263,7 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
         # Fetch a second CC0 painting from a random source
         source = random.choice(["met", "artic"])
         artwork = fetch_artwork(source)
-        img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+        img = open_rgb(artwork.image_bytes)
         return img, {
             "style_title": artwork.title,
             "style_artist": artwork.artist,
@@ -273,7 +283,7 @@ def pick_style(mode: str) -> tuple[Image.Image, dict]:
     if not style_path.exists():
         raise FileNotFoundError(f"Style image not found: {style_path}")
 
-    img = Image.open(style_path).convert("RGB")
+    img = open_rgb(style_path.read_bytes())
     return img, {
         "style_title": style_info["title"],
         "style_artist": style_info["artist"],
@@ -491,7 +501,7 @@ def main():
     print(f"  Artist: {artwork.artist}")
 
     # 1b. Quality gate
-    content_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    content_img = open_rgb(artwork.image_bytes)
     if not args.skip_quality_check:
         t = time.perf_counter()
         qscore = score_image(content_img)
@@ -600,7 +610,9 @@ def main():
     t = time.perf_counter()
     print("Embedding EXIF metadata...")
     stylized_bytes = embed_exif(stylized, metadata)
-    original_img = Image.open(BytesIO(artwork.image_bytes)).convert("RGB")
+    # Same upright pixels the style transfer saw. Opening the source again
+    # would re-decode and, before open_rgb, would have re-attached its EXIF.
+    original_img = content_img
     original_bytes = embed_exif(original_img, metadata)
     record_timing("embed_exif", t)
 

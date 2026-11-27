@@ -1,10 +1,13 @@
 """Tests for fetch.py — title filtering and Artwork dataclass."""
 
+from io import BytesIO
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 import requests
+from PIL import Image
 
 import fetch
 from fetch import (
@@ -327,6 +330,44 @@ class TestArticRequests:
         headers = iiif_call.kwargs["headers"]
         assert "http" not in headers["User-Agent"]
         assert headers["AIC-User-Agent"] == fetch.USER_AGENT
+
+
+class TestLandscapeOrientation:
+    """A portrait stored sideways must not pass the landscape gate.
+
+    Phone and some camera JPEGs keep a landscape raster and an Orientation
+    tag. Scoring the raster publishes that portrait as a wallpaper, and once
+    the tag is dropped from the public JPEG the pixels are what the viewer
+    sees.
+    """
+
+    @staticmethod
+    def _noisy_jpeg(orientation: int | None) -> bytes:
+        rng = np.random.default_rng(0)
+        # Height, width: a landscape raster. Orientation 6 displays it as a portrait.
+        arr = rng.integers(0, 256, (800, 1200, 3), dtype=np.uint8)
+        img = Image.fromarray(arr, "RGB")
+        buf = BytesIO()
+        if orientation is None:
+            img.save(buf, format="JPEG", quality=95)
+        else:
+            exif = img.getexif()
+            exif[0x0112] = orientation
+            img.save(buf, format="JPEG", quality=95, exif=exif.tobytes())
+        return buf.getvalue()
+
+    def test_orientation_6_is_rejected_as_portrait(self):
+        passed, reason = fetch._check_quality(
+            self._noisy_jpeg(6), landscape_orientation=True,
+        )
+        assert not passed
+        assert "800:1200" in reason
+
+    def test_same_raster_without_orientation_passes(self):
+        passed, reason = fetch._check_quality(
+            self._noisy_jpeg(None), landscape_orientation=True,
+        )
+        assert passed, reason
 
 
 class TestBudgets:

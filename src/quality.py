@@ -6,9 +6,10 @@ provide a cheap aesthetic signal for generated outputs.
 """
 
 import sys
+from io import BytesIO
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image, ImageFilter, ImageOps
 
 # Minimum acceptable image dimensions (width or height).
 MIN_DIMENSION = 512
@@ -27,6 +28,26 @@ MAX_ASPECT_RATIO = 3.0   # 3:1 panoramic
 # shape constraint has to be enforced here or portrait-format paintings end up
 # being published as wallpapers.
 MIN_LANDSCAPE_ASPECT_RATIO = 1.0  # square or wider
+
+
+def open_rgb(image_bytes: bytes) -> Image.Image:
+    """Decode image bytes as an upright RGB image.
+
+    EXIF Orientation is applied to the pixels. Published JPEGs do not carry
+    the source EXIF (see ``embed_exif``), so leaving the pixels unrotated
+    would display a sideways photo once that tag is gone. The landscape gate
+    uses this too: a portrait stored as a landscape raster with
+    ``Orientation=6`` has to be judged by the dimensions a viewer sees.
+    """
+    with Image.open(BytesIO(image_bytes)) as img:
+        img.load()
+        oriented = ImageOps.exif_transpose(img) or img
+        rgb = oriented.convert("RGB")
+        # convert() may return the same object. Copy so the result survives
+        # the source image being closed.
+        if rgb is img or rgb is oriented:
+            rgb = rgb.copy()
+        return rgb
 
 
 def sharpness_score(image: Image.Image) -> float:
