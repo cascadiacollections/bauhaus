@@ -201,8 +201,8 @@ If the preferred format is missing, it falls back to JPEG.
 | Query parameter | Values | Description |
 |-----------------|--------|-------------|
 | `format` | `auto` (default), `jpeg`, `avif`, `webp` | Explicit format override |
-| `progressive` | `true` | Serve progressive JPEG variant |
-| `strip` | `true` | Serve EXIF-stripped (privacy-safe) variant |
+| `progressive` | `true` | Serve the progressive JPEG. If that variant is missing, serve the baseline JPEG — never AVIF or WebP |
+| `strip` | `true` | Serve the EXIF-stripped JPEG. If that variant is missing, serve the baseline JPEG with EXIF, XMP, and IPTC removed. This is what makes `/api/:date/original?strip=true` privacy-safe: originals are not published with a pre-stripped file |
 
 All image responses include a `Vary: Accept` header for correct caching.
 

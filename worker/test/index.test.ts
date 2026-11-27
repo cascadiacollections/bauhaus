@@ -50,6 +50,55 @@ function makeBucket(objects: Record<string, R2ObjectBody | undefined>): R2Bucket
   } as unknown as R2Bucket;
 }
 
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+/** Minimal JPEG: JFIF + EXIF (with a GPS string) + IPTC + a scan. */
+function jpegWithPrivacySegments(): Uint8Array {
+  const segment = (marker: number, payload: Uint8Array) => {
+    const len = payload.byteLength + 2;
+    const out = new Uint8Array(4 + payload.byteLength);
+    out[0] = 0xff;
+    out[1] = marker;
+    out[2] = len >> 8;
+    out[3] = len & 0xff;
+    out.set(payload, 4);
+    return out;
+  };
+  const text = (s: string) => new TextEncoder().encode(s);
+  return concatBytes([
+    new Uint8Array([0xff, 0xd8]),
+    segment(0xe0, text("JFIF\0")),
+    segment(0xe1, text("Exif\0\0GPS:37.7749,-122.4194")),
+    segment(0xed, text("IPTC-SECRET")),
+    new Uint8Array([0xff, 0xda, 0x00, 0x02]),
+    text("SCAN"),
+    new Uint8Array([0xff, 0xd9]),
+  ]);
+}
+
+function bytesObject(bytes: Uint8Array, etag: string, key: string): R2ObjectBody {
+  return {
+    key,
+    httpEtag: etag,
+    httpMetadata: { contentType: "image/jpeg" },
+    arrayBuffer: async () => bytes.slice().buffer,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+  } as unknown as R2ObjectBody;
+}
+
 function makeRequest(
   path: string,
   opts?: { accept?: string; method?: string },
@@ -346,6 +395,8 @@ describe("variant resolution fixtures", () => {
       objects: {
         "latest.json": fakeR2Body({ date: DATE }),
         [`stylized/${DATE_PATH}.jpg`]: fakeR2Body("jpeg-bytes", "image/jpeg", '"jpeg-etag"', `stylized/${DATE_PATH}.jpg`),
+        // Present on purpose: the fallback used to negotiate this instead of JPEG.
+        [`stylized/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"', `stylized/${DATE_PATH}.avif`),
       },
       expectedStatus: 200,
       expectedContentType: "image/jpeg",
@@ -360,6 +411,94 @@ describe("variant resolution fixtures", () => {
     expect(res.status).toBe(expectedStatus);
     expect(res.headers.get("Content-Type")).toBe(expectedContentType);
     expect(res.headers.get("X-Variant")).toBe(expectedVariant);
+  });
+
+  it("strip=true removes EXIF from the baseline JPEG when no stripped variant exists", async () => {
+    const jpeg = jpegWithPrivacySegments();
+    const key = `originals/${DATE_PATH}.jpg`;
+    const bucket = makeBucket({
+      [`${key}`]: bytesObject(jpeg, '"orig-etag"', key),
+      [`originals/${DATE_PATH}.avif`]: fakeR2Body("avif-bytes", "image/avif", '"avif-etag"'),
+    });
+    const env = {
+      BUCKET: bucket,
+      WEB_VITALS: makeAnalyticsDataset(),
+      WEB_ERRORS: makeAnalyticsDataset(),
+      ALLOWED_ORIGINS: "",
+    };
+    const res = await worker.fetch(
+      makeRequest(`/api/${DATE}/original?format=avif&strip=true`, { accept: "image/avif" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(res.headers.get("X-Variant")).toBe("stripped");
+    expect(res.headers.get("ETag")).toBe('"strip-orig-etag"');
+    const body = new Uint8Array(await res.arrayBuffer());
+    const text = new TextDecoder().decode(body);
+    expect(text).toContain("JFIF");
+    expect(text).toContain("SCAN");
+    expect(text).not.toContain("GPS:37.7749");
+    expect(text).not.toContain("IPTC-SECRET");
+    expect(body[0]).toBe(0xff);
+    expect(body[1]).toBe(0xd8);
+  });
+
+  it("strip=true HEAD advertises the same ETag GET will, without reading the image", async () => {
+    const key = `originals/${DATE_PATH}.jpg`;
+    const bucket = makeBucket({
+      [key]: bytesObject(jpegWithPrivacySegments(), '"orig-etag"', key),
+    });
+    const env = {
+      BUCKET: bucket,
+      WEB_VITALS: makeAnalyticsDataset(),
+      WEB_ERRORS: makeAnalyticsDataset(),
+      ALLOWED_ORIGINS: "",
+    };
+    const head = await worker.fetch(
+      makeRequest(`/api/${DATE}/original?strip=true`, { method: "HEAD" }),
+      env,
+    );
+    expect(head.status).toBe(200);
+    expect(head.headers.get("ETag")).toBe('"strip-orig-etag"');
+    expect(head.headers.get("X-Variant")).toBe("stripped");
+    const gets = (bucket.get as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[0]);
+    expect(gets).not.toContain(key);
+
+    const cached = await worker.fetch(
+      new Request(`https://example.com/api/${DATE}/original?strip=true`, {
+        headers: { "If-None-Match": '"strip-orig-etag"' },
+      }),
+      env,
+    );
+    expect(cached.status).toBe(304);
+    expect(cached.headers.get("ETag")).toBe('"strip-orig-etag"');
+  });
+
+  it("strip=true wins over progressive=true so the response is not the EXIF-bearing progressive file", async () => {
+    const key = `stylized/${DATE_PATH}.jpg`;
+    const bucket = makeBucket({
+      [key]: bytesObject(jpegWithPrivacySegments(), '"base-etag"', key),
+      [`stylized/${DATE_PATH}.progressive.jpg`]: fakeR2Body(
+        "progressive-still-has-exif",
+        "image/jpeg",
+        '"prog-etag"',
+      ),
+    });
+    const env = {
+      BUCKET: bucket,
+      WEB_VITALS: makeAnalyticsDataset(),
+      WEB_ERRORS: makeAnalyticsDataset(),
+      ALLOWED_ORIGINS: "",
+    };
+    const res = await worker.fetch(
+      makeRequest(`/api/${DATE}?strip=true&progressive=true`),
+      env,
+    );
+    const text = await res.text();
+    expect(res.headers.get("X-Variant")).toBe("stripped");
+    expect(text).not.toContain("progressive-still-has-exif");
+    expect(text).not.toContain("GPS:37.7749");
   });
 });
 

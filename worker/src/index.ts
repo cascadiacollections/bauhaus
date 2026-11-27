@@ -26,8 +26,14 @@
  *   (AVIF > WebP > JPEG) and falls back to JPEG when a variant is missing.
  *
  * Query parameters:
- *   ?progressive=true    → serve progressive JPEG variant (falls back to baseline)
- *   ?strip=true          → serve EXIF-stripped JPEG variant (falls back to original)
+ *   ?progressive=true    → progressive JPEG, or baseline JPEG if that variant
+ *                          is missing. Never another format: a client that
+ *                          asked for JPEG must not receive AVIF.
+ *   ?strip=true          → EXIF-stripped JPEG. The pre-generated variant is
+ *                          preferred; otherwise the baseline JPEG is served
+ *                          with APP1 (EXIF/XMP) and APP13 (IPTC) removed.
+ *                          Never another format, and never the untouched
+ *                          baseline — that file can still carry GPS.
  */
 
 import {
@@ -40,6 +46,7 @@ import {
   type FeedMetadata,
 } from "./feed";
 import { recordHistory, type HistoryEnv } from "./history";
+import { stripJpegMetadata } from "./jpeg";
 import { storageFor, type StorageEnv } from "./storage";
 
 interface Env extends StorageEnv {
@@ -260,6 +267,80 @@ async function handleTelemetry(
   });
 }
 
+/**
+ * ETag for a JPEG whose metadata was removed on the way out.
+ *
+ * Derived from the baseline validator so HEAD and GET agree without either
+ * one hashing the body. It must not be the baseline ETag: the bytes differ
+ * whenever APP1/APP13 was present, and a shared cache keys on this URL plus
+ * the validator.
+ */
+export function strippedVariantEtag(httpEtag: string | undefined): string {
+  const inner = (httpEtag ?? "")
+    .trim()
+    .replace(/^W\//, "")
+    .replaceAll('"', "")
+    .trim();
+  return `"strip-${inner || "none"}"`;
+}
+
+async function objectBytes(obj: R2ObjectBody): Promise<Uint8Array> {
+  if (typeof obj.arrayBuffer === "function") {
+    return new Uint8Array(await obj.arrayBuffer());
+  }
+  const reader = obj.body.getReader();
+  const chunks: Uint8Array[] = [];
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) chunks.push(value);
+  }
+  const out = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function bytesStream(bytes: Uint8Array): ReadableStream {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+/**
+ * Baseline JPEG with EXIF/XMP/IPTC removed, for `?strip=true` when the
+ * pipeline did not publish `*.stripped.jpg`.
+ *
+ * Originals never get a pre-generated stripped asset (only the stylized
+ * image does), so without this `/api/:date/original?strip=true` fell through
+ * to the baseline file — the one that still carries the camera's GPS.
+ */
+async function stripBaseline(
+  bucket: R2Bucket,
+  basePath: string,
+): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
+  const base = await bucket.get(`${basePath}.jpg`);
+  if (!base) return null;
+  const clean = stripJpegMetadata(await objectBytes(base));
+  const key = `${basePath}.stripped.jpg`;
+  const obj = {
+    key,
+    httpEtag: strippedVariantEtag(base.httpEtag),
+    httpMetadata: {
+      contentType: "image/jpeg",
+      cacheControl: base.httpMetadata?.cacheControl,
+    },
+    body: bytesStream(clean),
+  } as R2ObjectBody;
+  return { obj, contentType: "image/jpeg" };
+}
+
 async function getImageObject(
   bucket: R2Bucket,
   basePath: string,
@@ -267,15 +348,23 @@ async function getImageObject(
   progressive: boolean = false,
   strip: boolean = false,
 ): Promise<{ obj: R2ObjectBody; contentType: string } | null> {
-  // Explicit JPEG variants should win over negotiated format selection.
-  if (progressive) {
-    const obj = await bucket.get(`${basePath}.progressive.jpg`);
-    if (obj) return { obj, contentType: "image/jpeg" };
-  }
-
+  // Privacy wins over progressive: both flags means "no EXIF", and the
+  // progressive asset is the one that still has it.
   if (strip) {
     const stripped = await bucket.get(`${basePath}.stripped.jpg`);
     if (stripped) return { obj: stripped, contentType: "image/jpeg" };
+    return stripBaseline(bucket, basePath);
+  }
+
+  // An explicit JPEG variant must not fall through to Accept negotiation.
+  // `?progressive=true` used to serve AVIF whenever the progressive asset
+  // was missing and the client accepted AVIF.
+  if (progressive) {
+    const obj = await bucket.get(`${basePath}.progressive.jpg`);
+    if (obj) return { obj, contentType: "image/jpeg" };
+    const baseline = await bucket.get(`${basePath}.jpg`);
+    if (baseline) return { obj: baseline, contentType: "image/jpeg" };
+    return null;
   }
 
   // Try the negotiated format
@@ -304,16 +393,34 @@ async function headImageObject(
   progressive = false,
   strip = false,
 ): Promise<{ head: R2Object; key: string; contentType: string } | null> {
-  if (progressive) {
-    const key = `${basePath}.progressive.jpg`;
-    const h = await bucket.head(key);
-    if (h) return { head: h, key, contentType: "image/jpeg" };
-  }
-
+  // Same order as getImageObject. The strip fallback's ETag is derived from
+  // the baseline head, so a conditional request does not download the image.
   if (strip) {
     const key = `${basePath}.stripped.jpg`;
     const h = await bucket.head(key);
     if (h) return { head: h, key, contentType: "image/jpeg" };
+    const baselineKey = `${basePath}.jpg`;
+    const baseline = await bucket.head(baselineKey);
+    if (!baseline) return null;
+    return {
+      head: {
+        key,
+        httpEtag: strippedVariantEtag(baseline.httpEtag),
+        httpMetadata: baseline.httpMetadata,
+      } as R2Object,
+      key,
+      contentType: "image/jpeg",
+    };
+  }
+
+  if (progressive) {
+    const key = `${basePath}.progressive.jpg`;
+    const h = await bucket.head(key);
+    if (h) return { head: h, key, contentType: "image/jpeg" };
+    const baselineKey = `${basePath}.jpg`;
+    const baseline = await bucket.head(baselineKey);
+    if (baseline) return { head: baseline, key: baselineKey, contentType: "image/jpeg" };
+    return null;
   }
 
   const key = `${basePath}${FORMAT_EXT[format]}`;
@@ -728,10 +835,9 @@ async function serveImage(
       );
       return new Response(null, { status: 200, headers });
     }
-    // ETag doesn't match — fetch the full object using the already-resolved key
-    const obj = await bucket.get(headResult.key);
-    if (!obj) return notFound(notFoundMsg);
-    return imageResponse(obj, headResult.contentType, today);
+    // ETag miss: resolve the body the same way a plain GET would. Going back
+    // through getImageObject matters for ?strip=true, which may rewrite the
+    // baseline JPEG; bucket.get(key) would serve the EXIF that rewrite removes.
   }
 
   const result = await getImageObject(bucket, basePath, format, progressive, strip);
