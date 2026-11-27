@@ -412,6 +412,29 @@ class TestBudgets:
              pytest.raises(RuntimeError, match=f"after {fetch.MAX_ATTEMPTS} attempts"):
             fetch.fetch_artic()
 
+    def test_network_failures_do_not_spend_candidate_attempts(self):
+        """A blip between rejections must not shorten the candidate budget.
+
+        candidates += 1 runs at the top of every iteration, including the
+        ones that raise. Without giving that increment back, three transport
+        failures and twenty-two rejections hit the candidate cap and the
+        source is abandoned with candidate attempts still unused.
+        """
+        calls = {"n": 0}
+
+        def flaky(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise requests.RequestException("blip")
+            return self._rejected_candidate()
+
+        with patch("fetch._get", side_effect=flaky), \
+             patch("fetch.time.sleep") as sleep, \
+             pytest.raises(RuntimeError, match="candidate artworks were rejected"):
+            fetch.fetch_met()
+        assert sleep.call_count == 3
+        assert calls["n"] == 3 + fetch.MAX_CANDIDATES * 3
+
 
 class TestSourceFallback:
     """A source that comes up empty must not cost the day its artwork."""

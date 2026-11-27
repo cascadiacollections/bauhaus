@@ -267,6 +267,11 @@ def fetch_met(landscapes_only: bool = True, quality_gate: bool = True) -> Artwor
             )
         except requests.RequestException as e:
             print(f"Met attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            # The increment at the top of the loop is for a candidate that was
+            # examined. A transport failure is not one of those: it has its
+            # own budget, and charging it here is how a few blips used to
+            # shorten a healthy museum's candidate list.
+            candidates -= 1
             _sleep_before_retry(network_failures)
             network_failures += 1
 
@@ -338,6 +343,7 @@ def fetch_artic(landscapes_only: bool = True, quality_gate: bool = True) -> Artw
             )
         except requests.RequestException as e:
             print(f"AIC attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            candidates -= 1
             _sleep_before_retry(network_failures)
             network_failures += 1
 
@@ -403,6 +409,7 @@ def fetch_unsplash(landscapes_only: bool = True, quality_gate: bool = True) -> A
             )
         except requests.RequestException as e:
             print(f"Unsplash attempt {network_failures + 1} failed: {e}", file=sys.stderr)
+            candidates -= 1
             _sleep_before_retry(network_failures)
             network_failures += 1
 
